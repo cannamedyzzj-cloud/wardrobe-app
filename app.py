@@ -3,7 +3,7 @@
 import json, io, zipfile, os, uuid, base64
 from datetime import datetime
 from collections import Counter
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response
+from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, session, g, abort
 from flask_sqlalchemy import SQLAlchemy
 from PIL import Image
 
@@ -14,8 +14,50 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = os.path.join(os.environ.get('DATA_PATH', './data'), 'uploads')
 db = SQLAlchemy(app)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 365 * 24 * 3600
+
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    display_name = db.Column(db.String(100))
+    is_admin = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+def get_user():
+    return User.query.get(session.get('user_id')) if 'user_id' in session else None
+
+from sqlalchemy import event
+
+# 注意：before_flush 事件不在请求上下文中，不能用 session/g
+# user_id 在各路由中手动设置
+
+def uq(model):
+    """用户数据隔离查询 —— 所有查询通过此函数自动加 user_id 过滤"""
+    uid = session.get('user_id')
+    if uid and hasattr(model, 'user_id'):
+        return model.query.filter(model.user_id == uid)
+    return model.query
+
+@app.before_request
+def check_login():
+    g.user_id = session.get("user_id")
+    if g.user_id is None and request.endpoint not in ("login","register","static","uploaded_file","manifest","service_worker",None):
+        if not request.path.startswith("/uploads/") and not request.path.startswith("/static/"):
+            return redirect(url_for("login"))
+
+# Auth routes —— appended at end
+
 
 class Category(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), default=0)
+
     __tablename__ = 'categories'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), nullable=False)
@@ -24,6 +66,8 @@ class Category(db.Model):
     garments = db.relationship('Garment', backref='category', lazy='dynamic')
 
 class Brand(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), default=0)
+
     __tablename__ = 'brands'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -31,12 +75,16 @@ class Brand(db.Model):
     garments = db.relationship('Garment', backref='brand_rel', lazy='dynamic')
 
 class ColorPreset(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), default=0)
+
     __tablename__ = 'color_presets'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
 
 class LocationPreset(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), default=0)
+
     __tablename__ = 'location_presets'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
@@ -46,6 +94,8 @@ class LocationPreset(db.Model):
     garments = db.relationship('Garment', backref='location_preset', lazy='dynamic')
 
 class Garment(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), default=0)
+
     __tablename__ = 'garments'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
@@ -69,6 +119,7 @@ class Garment(db.Model):
     length = db.Column(db.Float); sleeve = db.Column(db.Float)
     custom_size = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 DEFAULT_CATEGORIES = [('\U0001f455','\u4e0a\u8863',1),('\U0001f456','\u88e4\u5b50',2),('\U0001f457','\u88d9\u5b50',3),('\U0001f9e5','\u5916\u5957',4),('\U0001f9e3','\u914d\u9970',5)]
@@ -225,21 +276,21 @@ def match_category(ai_results, user_categories):
 
 @app.route('/')
 def index():
-    categories = Category.query.order_by(Category.sort_order).all()
-    total = Garment.query.filter_by(archived=False).count()
-    cat_counts = {c.id: Garment.query.filter_by(category_id=c.id, archived=False).count() for c in categories}
-    season_stats = {sg: Garment.query.filter_by(archived=False, season_group=sg).count() for sg in ['\u590f\u5b63','\u51ac\u5b63','\u6625\u79cb\u5b63']}
-    out_count = Garment.query.filter_by(archived=False).filter(Garment.status != '\u5728\u5e93').count()
+    categories = uq(Category).order_by(Category.sort_order).all()
+    total = uq(Garment).filter_by(archived=False).count()
+    cat_counts = {c.id: uq(Garment).filter_by(category_id=c.id, archived=False).count() for c in categories}
+    season_stats = {sg: uq(Garment).filter_by(archived=False, season_group=sg).count() for sg in ['\u590f\u5b63','\u51ac\u5b63','\u6625\u79cb\u5b63']}
+    out_count = uq(Garment).filter_by(archived=False).filter(Garment.status != '\u5728\u5e93').count()
     m = datetime.utcnow().month
     current_season = '\u590f\u5b63' if m in [5,6,7,8,9] else ('\u51ac\u5b63' if m in [12,1,2] else '\u6625\u79cb\u5b63')
-    recent = Garment.query.filter_by(archived=False).order_by(Garment.created_at.desc()).limit(8).all()
+    recent = uq(Garment).filter_by(archived=False).order_by(Garment.created_at.desc()).limit(8).all()
     return render_template('index.html', categories=categories, total=total, out_count=out_count,
                           cat_counts=cat_counts, season_stats=season_stats, current_season=current_season,
                           recent=recent, format_location=format_storage_location)
 
 @app.route('/garments')
 def garment_list():
-    query = Garment.query.filter_by(archived=False)
+    query = uq(Garment).filter_by(archived=False)
     if cid := request.args.get('category', type=int): query = query.filter_by(category_id=cid)
     if sg := request.args.get('season'): query = query.filter_by(season_group=sg)
     if lid := request.args.get('location', type=int): query = query.filter_by(location_preset_id=lid)
@@ -249,22 +300,23 @@ def garment_list():
         db.or_(Garment.name.ilike(f'%{s}%'), Garment.color.ilike(f'%{s}%'), Garment.notes.ilike(f'%{s}%')))
     garments = query.order_by(Garment.created_at.desc()).all()
     return render_template('list.html', garments=garments,
-                          categories=Category.query.order_by(Category.sort_order).all(),
-                          location_presets=LocationPreset.query.order_by(LocationPreset.sort_order).all(),
-                          brands=Brand.query.order_by(Brand.sort_order).all(),
+                          categories=uq(Category).order_by(Category.sort_order).all(),
+                          location_presets=uq(LocationPreset).order_by(LocationPreset.sort_order).all(),
+                          brands=uq(Brand).order_by(Brand.sort_order).all(),
                           current_category=cid, current_season=sg, current_location=lid, current_brand=bid,
                           current_search=s or '', format_location=format_storage_location)
 
 @app.route('/garments/<int:id>')
 def garment_detail(id):
-    return render_template('detail.html', garment=Garment.query.get_or_404(id), format_location=format_storage_location)
+    return render_template('detail.html', garment=uq(Garment).get_or_404(id), format_location=format_storage_location)
 
 def _save_garment(garment):
+    garment.user_id = session.get('user_id', 0)
     garment.name = request.form.get('name','')
     # 分类：支持输入新分类
     cname = request.form.get('category_text', '').strip()
     if cname:
-        cat = Category.query.filter_by(name=cname).first()
+        cat = uq(Category).filter_by(name=cname).first()
         if not cat:
             mo = db.session.query(db.func.max(Category.sort_order)).scalar() or 0
             cat = Category(name=cname, icon='📦', sort_order=mo+1)
@@ -285,7 +337,7 @@ def _save_garment(garment):
     # 品牌：新文字 > 下拉选择 > 空
     bname = request.form.get('brand_text', '').strip()
     if bname:
-        brand = Brand.query.filter_by(name=bname).first()
+        brand = uq(Brand).filter_by(name=bname).first()
         if not brand:
             mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
             brand = Brand(name=bname, sort_order=mo+1)
@@ -297,7 +349,7 @@ def _save_garment(garment):
     # 自动保存颜色预设
     if garment.color and garment.color.strip():
         cn = garment.color.strip()
-        if not ColorPreset.query.filter_by(name=cn).first():
+        if not uq(ColorPreset).filter_by(name=cn).first():
             mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
             db.session.add(ColorPreset(name=cn, sort_order=mo+1))
     else: garment.purchase_date = None
@@ -311,39 +363,40 @@ def garment_new():
     if request.method == 'POST':
         g = Garment(); _save_garment(g); db.session.add(g); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
-    return render_template('form.html', garment=None, color_presets=ColorPreset.query.order_by(ColorPreset.sort_order).all(),
-                          categories=Category.query.order_by(Category.sort_order).all(),
-                          location_presets=LocationPreset.query.order_by(LocationPreset.sort_order).all(),
-                          brands=Brand.query.order_by(Brand.sort_order).all(), mode='new')
+    return render_template('form.html', garment=None, color_presets=uq(ColorPreset).order_by(ColorPreset.sort_order).all(),
+                          categories=uq(Category).order_by(Category.sort_order).all(),
+                          location_presets=uq(LocationPreset).order_by(LocationPreset.sort_order).all(),
+                          brands=uq(Brand).order_by(Brand.sort_order).all(), mode='new')
 
 @app.route('/garments/<int:id>/edit', methods=['GET','POST'])
 def garment_edit(id):
-    g = Garment.query.get_or_404(id)
+    g = uq(Garment).get_or_404(id)
     if request.method == 'POST':
         _save_garment(g); g.updated_at = datetime.utcnow(); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
-    return render_template('form.html', garment=g, color_presets=ColorPreset.query.order_by(ColorPreset.sort_order).all(),
-                          categories=Category.query.order_by(Category.sort_order).all(),
-                          location_presets=LocationPreset.query.order_by(LocationPreset.sort_order).all(),
-                          brands=Brand.query.order_by(Brand.sort_order).all(), mode='edit')
+    return render_template('form.html', garment=g, color_presets=uq(ColorPreset).order_by(ColorPreset.sort_order).all(),
+                          categories=uq(Category).order_by(Category.sort_order).all(),
+                          location_presets=uq(LocationPreset).order_by(LocationPreset.sort_order).all(),
+                          brands=uq(Brand).order_by(Brand.sort_order).all(), mode='edit')
 
 @app.route('/garments/<int:id>/delete', methods=['POST'])
 def garment_delete(id):
-    db.session.delete(Garment.query.get_or_404(id)); db.session.commit()
+    db.session.delete(uq(Garment).get_or_404(id)); db.session.commit()
     return redirect(url_for('garment_list'))
 
 @app.route('/garments/<int:id>/clone', methods=['POST'])
 def garment_clone(id):
-    o = Garment.query.get_or_404(id)
+    o = uq(Garment).get_or_404(id)
     c = Garment(name=f"{o.name} (\u526f\u672c)", category_id=o.category_id, brand_id=o.brand_id,
                 location_preset_id=o.location_preset_id, color=o.color, material=o.material,
-                season_group=o.season_group, price=o.price, size_label=o.size_label, notes=o.notes)
+                season_group=o.season_group, price=o.price, size_label=o.size_label, notes=o.notes,
+                user_id=session.get('user_id', 0))
     db.session.add(c); db.session.commit()
     return redirect(url_for('garment_edit', id=c.id))
 
 @app.route('/garments/<int:id>/status', methods=['POST'])
 def garment_status(id):
-    g = Garment.query.get_or_404(id)
+    g = uq(Garment).get_or_404(id)
     g.status = request.form.get('status', '\u5728\u5e93')
     db.session.commit()
     return redirect(url_for('garment_detail', id=id))
@@ -362,10 +415,10 @@ def smart_analyze():
     ai_result = recognize_clothing(tmp_path)
     matched_cat = None
     if ai_result:
-        cats = Category.query.order_by(Category.sort_order).all()
+        cats = uq(Category).order_by(Category.sort_order).all()
         cid, score = match_category(ai_result, cats)
         if cid and score > 10:
-            cat = Category.query.get(cid)
+            cat = uq(Category).get(cid)
             matched_cat = {'id': cid, 'name': cat.name, 'icon': cat.icon, 'score': score}
     fp = generate_fingerprint(tmp_path)
     return {
@@ -400,13 +453,13 @@ def garment_smart():
             ai_result = recognize_clothing(tmp_path)
             
             # 匹配已有衣物
-            cats = Category.query.order_by(Category.sort_order).all()
+            cats = uq(Category).order_by(Category.sort_order).all()
             cid = None
             ai_name = ''
             if ai_result and len(ai_result) > 0:
                 cid, _ = match_category(ai_result, cats)
                 ai_name = ai_result[0]['name']
-            candidates = Garment.query.filter_by(archived=False)
+            candidates = uq(Garment).filter_by(archived=False)
             if cid: candidates = candidates.filter_by(category_id=cid)
             scored = []
             for g in candidates.all():
@@ -439,7 +492,7 @@ def garment_smart():
             if ai_result and len(ai_result) > 0:
                 cid2, score2 = match_category(ai_result, cats)
                 if cid2 and score2 > 10:
-                    cat = Category.query.get(cid2)
+                    cat = uq(Category).get(cid2)
                     matched_cat = {'id': cid2, 'name': cat.name, 'icon': cat.icon, 'score': score2}
             
             smart_data = {
@@ -454,8 +507,9 @@ def garment_smart():
     if request.method == 'POST' and request.form.get('from_smart') == 'confirm':
         # 确认录入
         g = Garment()
+        g.user_id = session.get('user_id', 0)
         g.name = request.form.get('name', '未命名')
-        g.category_id = request.form.get('category_id', type=int) or (Category.query.first().id if Category.query.first() else None)
+        g.category_id = request.form.get('category_id', type=int) or (uq(Category).first().id if uq(Category).first() else None)
         g.brand_id = request.form.get('brand_id', type=int)
         g.location_preset_id = request.form.get('location_preset_id', type=int)
         g.color = request.form.get('color_text','').strip()
@@ -480,7 +534,7 @@ def garment_smart():
         # 品牌：新文字 > 下拉选择 > 空
         bn = request.form.get('brand_text', '').strip()
         if bn:
-            brand = Brand.query.filter_by(name=bn).first()
+            brand = uq(Brand).filter_by(name=bn).first()
             if not brand:
                 mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
                 brand = Brand(name=bn, sort_order=mo+1)
@@ -492,27 +546,28 @@ def garment_smart():
         # 自动保存颜色预设
         if g.color and g.color.strip():
             cn = g.color.strip()
-            if not ColorPreset.query.filter_by(name=cn).first():
+            if not uq(ColorPreset).filter_by(name=cn).first():
                 mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
                 db.session.add(ColorPreset(name=cn, sort_order=mo+1))
         db.session.add(g); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
     
-    categories = Category.query.order_by(Category.sort_order).all()
-    location_presets = LocationPreset.query.order_by(LocationPreset.sort_order).all()
-    brands = Brand.query.order_by(Brand.sort_order).all()
-    return render_template('smart.html', color_presets=ColorPreset.query.order_by(ColorPreset.sort_order).all(), 
+    categories = uq(Category).order_by(Category.sort_order).all()
+    location_presets = uq(LocationPreset).order_by(LocationPreset.sort_order).all()
+    brands = uq(Brand).order_by(Brand.sort_order).all()
+    return render_template('smart.html', color_presets=uq(ColorPreset).order_by(ColorPreset.sort_order).all(), 
                           categories=categories, location_presets=location_presets, brands=brands,
                           matched_garments=matched_garments, smart_data=smart_data)
-    categories = Category.query.order_by(Category.sort_order).all()
-    location_presets = LocationPreset.query.order_by(LocationPreset.sort_order).all()
-    brands = Brand.query.order_by(Brand.sort_order).all()
+    categories = uq(Category).order_by(Category.sort_order).all()
+    location_presets = uq(LocationPreset).order_by(LocationPreset.sort_order).all()
+    brands = uq(Brand).order_by(Brand.sort_order).all()
     if request.method == 'POST':
         g = Garment()
+        g.user_id = session.get('user_id', 0)
         g.name = request.form.get('name', '\u672a\u547d\u540d')
         cname = request.form.get('category_text', '').strip()
     if cname:
-        cat = Category.query.filter_by(name=cname).first()
+        cat = uq(Category).filter_by(name=cname).first()
         if not cat:
             mo = db.session.query(db.func.max(Category.sort_order)).scalar() or 0
             cat = Category(name=cname, icon='📦', sort_order=mo+1)
@@ -545,7 +600,7 @@ def garment_smart():
         # 品牌：新文字 > 下拉选择 > 空
         bn = request.form.get('brand_text', '').strip()
         if bn:
-            brand = Brand.query.filter_by(name=bn).first()
+            brand = uq(Brand).filter_by(name=bn).first()
             if not brand:
                 mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
                 brand = Brand(name=bn, sort_order=mo+1)
@@ -557,12 +612,12 @@ def garment_smart():
         # 自动保存颜色预设
         if g.color and g.color.strip():
             cn = g.color.strip()
-            if not ColorPreset.query.filter_by(name=cn).first():
+            if not uq(ColorPreset).filter_by(name=cn).first():
                 mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
                 db.session.add(ColorPreset(name=cn, sort_order=mo+1))
         db.session.add(g); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
-    return render_template('smart.html', color_presets=ColorPreset.query.order_by(ColorPreset.sort_order).all(), categories=categories, location_presets=location_presets, brands=brands)
+    return render_template('smart.html', color_presets=uq(ColorPreset).order_by(ColorPreset.sort_order).all(), categories=categories, location_presets=location_presets, brands=brands)
 
 @app.route('/find', methods=['GET','POST'])
 def find_location():
@@ -576,7 +631,7 @@ def find_location():
         query_fp = generate_fingerprint(tmp_path)
         colors = extract_colors(tmp_path)
         ai_result = recognize_clothing(tmp_path)
-        cats = Category.query.order_by(Category.sort_order).all()
+        cats = uq(Category).order_by(Category.sort_order).all()
         cid = None
         ai_name = ''
         ai_category = ''
@@ -584,7 +639,7 @@ def find_location():
             cid, _ = match_category(ai_result, cats)
             ai_name = ai_result[0]['name']
             ai_category = ai_result[0]['category']
-        candidates = Garment.query.filter_by(archived=False)
+        candidates = uq(Garment).filter_by(archived=False)
         if cid:
             candidates = candidates.filter_by(category_id=cid)
         scored = []
@@ -617,14 +672,14 @@ def find_location():
 
 @app.route('/locations')
 def locations():
-    presets = LocationPreset.query.order_by(LocationPreset.sort_order).all()
-    data = [{'preset': p, 'count': Garment.query.filter_by(location_preset_id=p.id, archived=False).count()} for p in presets]
+    presets = uq(LocationPreset).order_by(LocationPreset.sort_order).all()
+    data = [{'preset': p, 'count': uq(Garment).filter_by(location_preset_id=p.id, archived=False).count()} for p in presets]
     return render_template('locations.html', preset_data=data)
 
 @app.route('/manage')
 def manage():
-    return render_template('manage.html', cat_count=Category.query.count(),
-                          brand_count=Brand.query.count(), loc_count=LocationPreset.query.count(), color_count=ColorPreset.query.count())
+    return render_template('manage.html', cat_count=uq(Category).count(),
+                          brand_count=uq(Brand).count(), loc_count=uq(LocationPreset).count(), color_count=uq(ColorPreset).count())
 
 @app.route('/manage/categories', methods=['GET','POST'])
 def manage_categories():
@@ -637,14 +692,14 @@ def manage_categories():
                 db.session.add(Category(name=n, icon=request.form.get('icon','\U0001f4e6').strip(), sort_order=mo+1))
                 db.session.commit()
         elif a == 'edit':
-            cat = Category.query.get(request.form.get('id', type=int))
+            cat = uq(Category).get(request.form.get('id', type=int))
             if cat: cat.name = request.form.get('name','').strip(); cat.icon = request.form.get('icon','\U0001f4e6').strip(); db.session.commit()
         elif a == 'delete':
-            cat = Category.query.get(request.form.get('id', type=int))
+            cat = uq(Category).get(request.form.get('id', type=int))
             if cat and cat.garments.filter_by(archived=False).count()==0: db.session.delete(cat); db.session.commit()
         return redirect(url_for('manage_categories'))
-    cats = Category.query.order_by(Category.sort_order).all()
-    for c in cats: c.garment_count = Garment.query.filter_by(category_id=c.id, archived=False).count()
+    cats = uq(Category).order_by(Category.sort_order).all()
+    for c in cats: c.garment_count = uq(Garment).filter_by(category_id=c.id, archived=False).count()
     return render_template('manage_categories.html', categories=cats)
 
 @app.route('/manage/brands', methods=['GET','POST'])
@@ -657,14 +712,14 @@ def manage_brands():
                 mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
                 db.session.add(Brand(name=n, sort_order=mo+1)); db.session.commit()
         elif a == 'edit':
-            b = Brand.query.get(request.form.get('id', type=int))
+            b = uq(Brand).get(request.form.get('id', type=int))
             if b: b.name = request.form.get('name','').strip(); db.session.commit()
         elif a == 'delete':
-            b = Brand.query.get(request.form.get('id', type=int))
+            b = uq(Brand).get(request.form.get('id', type=int))
             if b and b.garments.filter_by(archived=False).count()==0: db.session.delete(b); db.session.commit()
         return redirect(url_for('manage_brands'))
-    brands = Brand.query.order_by(Brand.sort_order).all()
-    for b in brands: b.garment_count = Garment.query.filter_by(brand_id=b.id, archived=False).count()
+    brands = uq(Brand).order_by(Brand.sort_order).all()
+    for b in brands: b.garment_count = uq(Garment).filter_by(brand_id=b.id, archived=False).count()
     return render_template('manage_brands.html', brands=brands)
 
 @app.route('/manage/colors', methods=['GET','POST'])
@@ -677,14 +732,14 @@ def manage_colors():
                 mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
                 db.session.add(ColorPreset(name=n, sort_order=mo+1)); db.session.commit()
         elif a == 'edit':
-            c = ColorPreset.query.get(request.form.get('id', type=int))
+            c = uq(ColorPreset).get(request.form.get('id', type=int))
             if c: c.name = request.form.get('name','').strip(); db.session.commit()
         elif a == 'delete':
-            c = ColorPreset.query.get(request.form.get('id', type=int))
+            c = uq(ColorPreset).get(request.form.get('id', type=int))
             if c: db.session.delete(c); db.session.commit()
         return redirect(url_for('manage_colors'))
-    colors = ColorPreset.query.order_by(ColorPreset.sort_order).all()
-    for c in colors: c.garment_count = Garment.query.filter(Garment.color == c.name, Garment.archived == False).count()
+    colors = uq(ColorPreset).order_by(ColorPreset.sort_order).all()
+    for c in colors: c.garment_count = uq(Garment).filter(Garment.color == c.name, Garment.archived == False).count()
     return render_template('manage_colors.html', colors=colors)
 
 @app.route('/manage/locations', methods=['GET','POST'])
@@ -700,22 +755,22 @@ def manage_locations():
                 db.session.add(LocationPreset(name=display, room=room, cabinet=cab, shelf=shelf, box=box, sort_order=mo+1))
                 db.session.commit()
         elif a == 'edit':
-            lp = LocationPreset.query.get(request.form.get('id', type=int))
+            lp = uq(LocationPreset).get(request.form.get('id', type=int))
             if lp:
                 for f in ['room','cabinet','shelf','box']: setattr(lp, f, request.form.get(f,'').strip())
                 lp.name = ' \u2192 '.join(filter(None, [lp.room, lp.cabinet, lp.shelf, lp.position]))
                 db.session.commit()
         elif a == 'delete':
-            lp = LocationPreset.query.get(request.form.get('id', type=int))
+            lp = uq(LocationPreset).get(request.form.get('id', type=int))
             if lp and lp.garments.filter_by(archived=False).count()==0: db.session.delete(lp); db.session.commit()
         return redirect(url_for('manage_locations'))
-    presets = LocationPreset.query.order_by(LocationPreset.sort_order).all()
-    for p in presets: p.garment_count = Garment.query.filter_by(location_preset_id=p.id, archived=False).count()
+    presets = uq(LocationPreset).order_by(LocationPreset.sort_order).all()
+    for p in presets: p.garment_count = uq(Garment).filter_by(location_preset_id=p.id, archived=False).count()
     return render_template('manage_locations.html', presets=presets)
 
 @app.route('/export')
 def export_data():
-    garments = Garment.query.filter_by(archived=False).order_by(Garment.created_at.desc()).all()
+    garments = uq(Garment).filter_by(archived=False).order_by(Garment.created_at.desc()).all()
     data = []
     for g in garments:
         data.append({
@@ -755,3 +810,39 @@ def service_worker():
 if __name__ == '__main__':
     with app.app_context(): init_db()
     app.run(host='0.0.0.0', port=3000, debug=True)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        name = request.form.get("username","").strip()
+        pw = request.form.get("password","")
+        user = User.query.filter_by(username=name).first()
+        if user and check_password_hash(user.password_hash, pw):
+            session["user_id"] = user.id
+            return redirect(url_for("index"))
+        return render_template("login.html", error="用户名或密码错误")
+    return render_template("login.html")
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        name = request.form.get("username","").strip()
+        pw = request.form.get("password","")
+        if not name or not pw:
+            return render_template("register.html", error="请填写完整")
+        if User.query.filter_by(username=name).first():
+            return render_template("register.html", error="用户名已存在")
+        u = User(username=name, password_hash=generate_password_hash(pw),
+                 display_name=request.form.get("display_name","").strip() or name,
+                 is_admin=(User.query.count()==0))
+        db.session.add(u); db.session.commit()
+        session["user_id"] = u.id
+        return redirect(url_for("index"))
+    return render_template("register.html")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
