@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ garment.name }} - Samantha的衣橱{% endblock %}
+{% block content %}
+
+<div class="bg-white rounded-2xl shadow-sm overflow-hidden mb-4">
+    <div class="aspect-[4/3] bg-gray-100 flex items-center justify-center">
+        {% if garment.photo %}<img src="/uploads/{{ garment.photo }}" alt="{{ garment.name }}" class="w-full h-full object-contain">
+        {% else %}<span class="text-6xl">{{ garment.category.icon if garment.category else '👔' }}</span>{% endif %}
+    </div>
+</div>
+
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4">
+    <div class="flex items-start justify-between mb-3">
+        <h1 class="text-xl font-bold text-gray-800">{{ garment.name }}</h1>
+        <div class="flex gap-1">
+            <a href="/garments/{{ garment.id }}/edit" class="w-9 h-9 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-sm no-underline">✏️</a>
+            <form action="/garments/{{ garment.id }}/clone" method="post" onsubmit="return confirm('克隆这件衣服？')"><button class="w-9 h-9 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-sm">📋</button></form>
+        </div>
+    </div>
+
+    <div class="flex flex-wrap gap-2 mb-4">
+        {% if garment.category %}<span class="px-3 py-1 bg-pink-100 text-primary-dark rounded-full text-sm">{{ garment.category.icon }} {{ garment.category.name }}</span>{% endif %}
+        {% if garment.brand_rel %}<span class="px-3 py-1 bg-orange-50 text-orange-600 rounded-full text-sm">{{ garment.brand_rel.name }}</span>{% endif %}
+        {% if garment.size_label %}<span class="px-3 py-1 bg-purple-100 text-purple-600 rounded-full text-sm">{{ garment.size_label }}</span>{% endif %}
+        {% if garment.season_group %}<span class="px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-sm">{{ garment.season_group }}</span>{% endif %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 text-sm">
+        {% if garment.color %}<div class="bg-gray-50 rounded-xl p-3"><div class="text-gray-400 text-xs mb-1">颜色</div><div class="font-medium">{{ garment.color }}</div></div>{% endif %}
+        {% if garment.material %}<div class="bg-gray-50 rounded-xl p-3"><div class="text-gray-400 text-xs mb-1">材质</div><div class="font-medium">{{ garment.material }}</div></div>{% endif %}
+        {% if garment.price %}<div class="bg-gray-50 rounded-xl p-3"><div class="text-gray-400 text-xs mb-1">价格</div><div class="font-medium">¥{{ "%.2f"|format(garment.price) }}</div></div>{% endif %}
+        {% if garment.purchase_date %}<div class="bg-gray-50 rounded-xl p-3"><div class="text-gray-400 text-xs mb-1">购买日期</div><div class="font-medium">{{ garment.purchase_date }}</div></div>{% endif %}
+    </div>
+</div>
+
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4 border-l-4 border-green-400">
+    <h2 class="text-base font-bold text-gray-700 mb-3">📍 存放位置</h2>
+    {% if garment.location_preset %}
+    <div class="text-green-700 font-medium">
+        🏠 {{ garment.location_preset.room }}
+        {% if garment.location_preset.cabinet %} → 🗄️ {{ garment.location_preset.cabinet }}{% endif %}
+        {% if garment.location_preset.shelf %} → 📐 {{ garment.location_preset.shelf }}{% endif %}
+        {% if garment.location_preset.box %} → 📦 {{ garment.location_preset.box }}{% endif %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm">⚠️ 未标记存放位置 <a href="/garments/{{ garment.id }}/edit" class="text-primary text-xs">去标记</a></p>
+    {% endif %}
+</div>
+
+{% if garment.notes %}
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4">
+    <h2 class="text-base font-bold text-gray-700 mb-2">📝 备注</h2>
+    <p class="text-sm text-gray-600 whitespace-pre-wrap">{{ garment.notes }}</p>
+</div>
+{% endif %}
+
+<div>
+    <form action="/garments/{{ garment.id }}/delete" method="post" onsubmit="return confirm('确定删除？不可恢复。')">
+        <button class="w-full py-2.5 rounded-xl bg-red-50 text-red-500 text-sm hover:bg-red-100">🗑️ 删除这件衣服</button>
+    </form>
+</div>
+{% endblock %}

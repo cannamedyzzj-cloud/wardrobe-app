@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}智能录入 - Samantha的衣橱{% endblock %}
+{% block content %}
+
+<h1 class="text-xl font-bold text-gray-800 mb-1">📷 智能录入</h1>
+<p class="text-sm text-gray-400 mb-4">拍照自动识别分类和颜色，确认即可入库</p>
+
+<form method="post" enctype="multipart/form-data" class="space-y-4" id="smart-form">
+
+<!-- 照片区 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm">
+    <div id="upload-area" class="border-2 border-dashed border-pink-300 rounded-2xl p-8 text-center cursor-pointer hover:border-primary transition-colors">
+        <div class="text-5xl mb-3" id="upload-icon">📷</div>
+        <div class="text-gray-600 font-medium mb-1" id="upload-text">点击拍照或选择照片</div>
+        <div class="text-xs text-gray-400">AI 将自动识别分类和颜色</div>
+        <input type="file" name="photo" accept="image/*" capture="environment" class="hidden" id="photo-input">
+    </div>
+    <!-- 预览 -->
+    <div id="preview-area" class="hidden mt-3">
+        <img id="preview-img" class="w-full rounded-xl max-h-64 object-contain bg-gray-100">
+        <div class="flex gap-2 mt-2">
+            <button type="button" onclick="resetPhoto()" class="flex-1 py-2 rounded-xl border border-gray-300 text-gray-600 text-sm">重新拍照</button>
+        </div>
+    </div>
+    <!-- 分析中 -->
+    <div id="analyzing" class="hidden mt-3 bg-pink-50 rounded-xl p-4 text-center">
+        <div class="animate-pulse text-lg">🔍 AI 正在分析中…</div>
+        <div class="text-sm text-gray-500 mt-1">识别分类、提取颜色</div>
+    </div>
+    <!-- 分析结果 -->
+    <div id="result-area" class="hidden mt-3 bg-green-50 rounded-xl p-4">
+        <div class="text-sm font-bold text-green-700 mb-2">✅ 识别完成</div>
+        <div class="grid grid-cols-2 gap-2 text-sm">
+            <div id="result-category" class="bg-white rounded-lg p-2">
+                <span class="text-gray-400">分类：</span><span class="font-medium"></span>
+            </div>
+            <div id="result-color" class="bg-white rounded-lg p-2">
+                <span class="text-gray-400">颜色：</span><span class="font-medium"></span>
+            </div>
+        </div>
+        <div id="result-ai-detail" class="text-xs text-gray-400 mt-2 hidden"></div>
+    </div>
+</div>
+
+<!-- 确认信息 -->
+<div id="confirm-area" class="hidden space-y-4">
+    <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <h2 class="text-base font-bold text-gray-700 mb-3">📋 确认信息</h2>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">名称 <span class="text-red-400">*</span></label>
+                <input type="text" name="name" required placeholder="输入衣服名称"
+                       class="w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">分类 <span class="text-red-400">*</span></label>
+                <select name="category_id" required id="cat-select"
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary">
+                    <option value="">请选择</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+                    {% endfor %}
+                </select>
+                <div id="cat-hint" class="text-xs text-green-600 mt-1 hidden">🤖 AI 建议选择此项</div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">颜色</label>
+                <input type="text" name="color" id="color-input" placeholder="自动识别"
+                       class="w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">品牌</label>
+                <select name="brand_id" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary">
+                    <option value="">选择品牌</option>
+                    {% for b in brands %}
+                    <option value="{{ b.id }}">{{ b.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">季节</label>
+                <select name="season_group" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary">
+                    <option value="">不限</option>
+                    <option value="夏季">☀️ 夏季</option>
+                    <option value="冬季">❄️ 冬季</option>
+                    <option value="春秋季">🍃 春秋季</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">存放位置</label>
+                <select name="location_preset_id" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary">
+                    <option value="">暂不标记</option>
+                    {% for lp in location_presets %}
+                    <option value="{{ lp.id }}">🏠 {{ lp.room }}{% if lp.cabinet %} → {{ lp.cabinet }}{% endif %}{% if lp.box %} → 📦{{ lp.box }}{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <input type="hidden" name="tmp_file" id="tmp-file">
+
+    <div class="flex gap-3">
+        <button type="button" onclick="resetAll()" class="flex-1 py-3 rounded-xl border border-gray-300 text-gray-600 font-medium">重来</button>
+        <button type="submit" class="flex-1 py-3 rounded-xl bg-primary text-white font-medium hover:bg-primary-dark">✅ 确认入库</button>
+    </div>
+</div>
+
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+const photoInput = document.getElementById('photo-input');
+const uploadArea = document.getElementById('upload-area');
+const previewArea = document.getElementById('preview-area');
+const previewImg = document.getElementById('preview-img');
+const analyzing = document.getElementById('analyzing');
+const resultArea = document.getElementById('result-area');
+const confirmArea = document.getElementById('confirm-area');
+
+uploadArea.addEventListener('click', () => photoInput.click());
+
+photoInput.addEventListener('change', function() {
+    if (!this.files || !this.files[0]) return;
+    const file = this.files[0];
+    
+    // 显示预览
+    const reader = new FileReader();
+    reader.onload = e => {
+        previewImg.src = e.target.result;
+        uploadArea.classList.add('hidden');
+        previewArea.classList.remove('hidden');
+        analyzing.classList.remove('hidden');
+    };
+    reader.readAsDataURL(file);
+    
+    // 上传分析
+    const fd = new FormData();
+    fd.append('photo', file);
+    fetch('/api/smart-analyze', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            analyzing.classList.add('hidden');
+            resultArea.classList.remove('hidden');
+            confirmArea.classList.remove('hidden');
+            
+            // 颜色
+            if (data.color_display) {
+                document.querySelector('#result-color .font-medium').textContent = data.color_display;
+                document.getElementById('color-input').value = data.color_display;
+            }
+            
+            // 分类
+            if (data.matched_category) {
+                const mc = data.matched_category;
+                document.querySelector('#result-category .font-medium').textContent = mc.icon + ' ' + mc.name;
+                document.getElementById('cat-select').value = mc.id;
+                document.getElementById('cat-hint').classList.remove('hidden');
+            }
+            
+            // AI详情
+            if (data.ai_products && data.ai_products.length > 0) {
+                const detail = data.ai_products.map(p => p.name + '(' + p.confidence + '%)').join(', ');
+                document.getElementById('result-ai-detail').textContent = 'AI识别: ' + detail;
+                document.getElementById('result-ai-detail').classList.remove('hidden');
+            }
+            
+            document.getElementById('tmp-file').value = data.tmp_file;
+        })
+        .catch(err => {
+            analyzing.classList.add('hidden');
+            // AI失败也能继续（至少颜色提取会成功）
+            confirmArea.classList.remove('hidden');
+            document.getElementById('result-area').classList.add('hidden');
+        });
+});
+
+function resetPhoto() {
+    previewArea.classList.add('hidden');
+    resultArea.classList.add('hidden');
+    confirmArea.classList.add('hidden');
+    uploadArea.classList.remove('hidden');
+    photoInput.value = '';
+    document.getElementById('cat-hint').classList.add('hidden');
+}
+
+function resetAll() {
+    resetPhoto();
+    document.getElementById('smart-form').reset();
+}
+</script>
+{% endblock %}

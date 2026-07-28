@@ -1,0 +1,12 @@
+services:
+  wardrobe:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - DATA_PATH=/app/data
+    restart: unless-stopped
