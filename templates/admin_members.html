@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}成员管理 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="mb-4">
+    <a href="/admin/wardrobes" class="text-gray-400 text-sm no-underline">← 返回衣橱管理</a>
+</div>
+
+<h2 class="text-base font-bold text-gray-600 mb-1">👥 成员管理</h2>
+<div class="text-sm text-gray-400 mb-4">衣橱：{{ wardrobe.name }}</div>
+
+{% if error %}
+<div class="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3 mb-4">{{ error }}</div>
+{% endif %}
+{% if success %}
+<div class="bg-green-50 text-green-600 text-sm rounded-xl px-4 py-3 mb-4">{{ success }}</div>
+{% endif %}
+
+<!-- 添加成员 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4">
+    <h3 class="font-bold text-gray-700 mb-3 text-sm">添加成员</h3>
+    <form method="post" class="flex flex-wrap items-end gap-3">
+        <input type="hidden" name="action" value="add">
+        <div class="flex-1 min-w-[120px]">
+            <label class="block text-xs font-medium text-gray-500 mb-1">用户</label>
+            <select name="user_id" required class="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm bg-white">
+                <option value="">选择用户</option>
+                {% for u in available_users %}
+                <option value="{{ u.id }}">{{ u.display_name or u.username }} (@{{ u.username }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1">角色</label>
+            <select name="role" class="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm bg-white">
+                <option value="owner">Owner - 完全控制</option>
+                <option value="member" selected>Member - 读写</option>
+                <option value="viewer">Viewer - 只读</option>
+            </select>
+        </div>
+        <button type="submit" class="px-5 py-2.5 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary-dark transition-colors">添加</button>
+    </form>
+</div>
+
+<!-- 成员列表 -->
+<div class="bg-white rounded-2xl shadow-sm overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-gray-50 text-gray-500 text-xs">
+                    <th class="px-4 py-3 text-left font-medium">用户</th>
+                    <th class="px-4 py-3 text-left font-medium">角色</th>
+                    <th class="px-4 py-3 text-left font-medium hidden sm:table-cell">加入时间</th>
+                    <th class="px-4 py-3 text-right font-medium">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in members %}
+                <tr class="border-t border-gray-50">
+                    <td class="px-4 py-3">
+                        <div class="font-medium text-gray-800">{{ m.user.display_name or m.user.username }}</div>
+                        <div class="text-xs text-gray-400">@{{ m.user.username }}</div>
+                    </td>
+                    <td class="px-4 py-3">
+                        <span class="text-xs px-2 py-0.5 rounded-full {% if m.role == 'owner' %}bg-purple-100 text-purple-600{% elif m.role == 'viewer' %}bg-gray-100 text-gray-500{% else %}bg-blue-100 text-blue-600{% endif %}">
+                            {{ {'owner':'Owner','member':'Member','viewer':'Viewer'}.get(m.role, m.role) }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3 text-gray-400 hidden sm:table-cell">
+                        {{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '-' }}
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                        <div class="flex items-center justify-end gap-1.5">
+                            {% if m.role != 'owner' %}
+                            <form method="post" class="inline">
+                                <input type="hidden" name="action" value="changerole">
+                                <input type="hidden" name="member_id" value="{{ m.id }}">
+                                <select name="role" onchange="this.form.submit()" class="text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 outline-none">
+                                    <option value="owner" {% if m.role=='owner' %}selected{% endif %}>Owner</option>
+                                    <option value="member" {% if m.role=='member' %}selected{% endif %}>Member</option>
+                                    <option value="viewer" {% if m.role=='viewer' %}selected{% endif %}>Viewer</option>
+                                </select>
+                            </form>
+                            {% endif %}
+                            <form method="post" onsubmit="return confirm('确定移除 {{ m.user.username }}？')">
+                                <input type="hidden" name="action" value="remove">
+                                <input type="hidden" name="member_id" value="{{ m.id }}">
+                                <button type="submit" class="text-xs px-2.5 py-1.5 rounded-lg bg-red-50 text-red-500 hover:opacity-80">移除</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

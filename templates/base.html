@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Samantha">
+    <meta name="theme-color" content="#f472b6">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/img/icon-192.png">
+    <title>{% block title %}Samantha的衣橱{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#f472b6',
+                        'primary-dark': '#db2777',
+                        'primary-light': '#fce7f3',
+                    },
+                    fontSize: {
+                        '2xs': '0.6875rem',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
+        
+        :root {
+            --sat: env(safe-area-inset-top, 0px);
+            --sar: env(safe-area-inset-right, 0px);
+            --sab: env(safe-area-inset-bottom, 0px);
+            --sal: env(safe-area-inset-left, 0px);
+        }
+        
+        * {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        html {
+            height: 100%;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        body {
+            min-height: 100%;
+            min-height: -webkit-fill-available;
+        }
+        
+        /* Status bar safe area */
+        .pt-safe { padding-top: var(--sat); }
+        
+        /* Bottom safe area */
+        .pb-safe { padding-bottom: calc(var(--sab) + 1rem); }
+        
+        /* Full-page container for notch + home indicator */
+        .app-container {
+            padding-top: var(--sat);
+            padding-bottom: calc(var(--sab) + 5rem);
+            padding-left: var(--sal);
+            padding-right: var(--sar);
+        }
+        
+        /* FAB button above home indicator */
+        .fab {
+            bottom: calc(var(--sab) + 1.5rem);
+            right: calc(var(--sar) + 1.5rem);
+        }
+        
+        /* Cards */
+        .garment-card:active { transform: scale(0.97); transition: transform 0.1s; }
+        
+        /* Native-like select appearance */
+        select {
+            -webkit-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L1 3h10z' fill='%23999'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            padding-right: 2.5rem !important;
+        }
+        
+        /* Smooth scrolling */
+        .smooth-scroll {
+            scroll-behavior: smooth;
+        }
+        
+        /* Input zoom prevention on iOS */
+        input[type="text"], input[type="number"], input[type="search"], textarea, select {
+            font-size: 16px !important;
+        }
+        
+        /* Number input hide spinner */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        
+        /* Active states */
+        .tap-active:active {
+            opacity: 0.7;
+        }
+        
+        /* Pull-down refresh feel */
+        @keyframes shimmer {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+        .loading-shimmer {
+            animation: shimmer 1.5s infinite;
+        }
+    </style>
+</head>
+<body class="bg-pink-50 min-h-screen">
+    <!-- Nav - sticky with safe area -->
+    <nav class="bg-white/90 backdrop-blur-lg shadow-sm sticky top-0 z-50" style="padding-top: var(--sat);">
+        <div class="max-w-2xl mx-auto px-4 py-2 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-1.5 text-primary-dark font-bold text-lg shrink-0 no-underline tap-active">
+                <span>👗</span> <span class="hidden sm:inline">Samantha</span>
+            </a>
+            <div class="flex items-center gap-0.5 shrink-0">
+                <a href="/" class="px-2.5 py-1.5 rounded-full text-xs font-medium no-underline tap-active {% if request.path == '/' %}bg-primary text-white{% else %}text-gray-500{% endif %}">首页</a>
+                <a href="/locations" class="px-2.5 py-1.5 rounded-full text-xs font-medium no-underline tap-active {% if request.path.startswith('/locations') %}bg-primary text-white{% else %}text-gray-500{% endif %}">位置</a>
+                <a href="/garments" class="px-2.5 py-1.5 rounded-full text-xs font-medium no-underline tap-active {% if request.path.startswith('/garments') %}bg-primary text-white{% else %}text-gray-500{% endif %}">衣物</a>
+                <a href="/manage" class="px-2.5 py-1.5 rounded-full text-xs font-medium no-underline tap-active {% if request.path.startswith('/manage') or request.path.startswith('/admin') %}bg-primary text-white{% else %}text-gray-500{% endif %}">管理</a>
+                <!-- 衣橱切换 + 用户菜单 -->
+                <button onclick="document.getElementById('user-menu').classList.toggle('hidden')" class="ml-1 w-8 h-8 rounded-full bg-gradient-to-br from-pink-300 to-purple-300 flex items-center justify-center text-white text-sm font-bold tap-active">
+                    {{ current_user.display_name[0] if current_user.display_name else current_user.username[0] }}
+                </button>
+            </div>
+        </div>
+        <!-- 下拉菜单 -->
+        <div id="user-menu" class="hidden absolute right-4 top-full mt-1 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50">
+            <!-- 当前用户 -->
+            <div class="px-4 py-3 border-b border-gray-50">
+                <div class="font-bold text-gray-800 text-sm">{{ current_user.display_name or current_user.username }}</div>
+                <div class="text-xs text-gray-400">@{{ current_user.username }}</div>
+            </div>
+            <!-- 衣橱切换 -->
+            {% if user_wardrobes and user_wardrobes|length > 1 %}
+            <div class="px-4 py-2 border-b border-gray-50">
+                <div class="text-xs text-gray-400 mb-1.5">衣橱</div>
+                {% for w in user_wardrobes %}
+                <form method="post" action="/wardrobe/switch" class="block">
+                    <input type="hidden" name="wardrobe_id" value="{{ w.id }}">
+                    <button type="submit" class="w-full text-left px-2 py-2 rounded-lg text-sm {% if current_w and current_w.id == w.id %}bg-pink-50 text-primary-dark font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %} transition-colors">
+                        👗 {{ w.name }}{% if current_w and current_w.id == w.id %} ✓{% endif %}
+                    </button>
+                </form>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <!-- 菜单项 -->
+            <a href="/account" class="block px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 no-underline transition-colors">👤 账号设置</a>
+            {% if current_user.is_system_admin %}
+            <a href="/admin/users" class="block px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 no-underline transition-colors">⚙️ 系统管理</a>
+            {% endif %}
+            <a href="/logout" class="block px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 no-underline transition-colors border-t border-gray-50">退出登录</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-2xl mx-auto px-5 py-5" style="padding-bottom: calc(var(--sab) + 6rem);">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- FAB -->
+    <a href="/garments/smart" class="fixed z-40 w-14 h-14 bg-gradient-to-br from-purple-400 to-pink-400 text-white rounded-2xl shadow-lg flex items-center justify-center text-2xl transition-all hover:shadow-xl active:scale-95 no-underline fab" title="智能录入">
+        📷
+    </a>
+
+    {% block scripts %}{% endblock %}
+    <script>
+        // Close user menu on outside click
+        document.addEventListener('click', function(e) {
+            var menu = document.getElementById('user-menu');
+            if (menu && !menu.contains(e.target) && !e.target.closest('button[onclick*="user-menu"]')) {
+                menu.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

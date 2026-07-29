@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}{% if mode == 'new' %}添加衣物{% else %}编辑{% endif %} - Samantha的衣橱{% endblock %}
+{% block content %}
+<form method="post" enctype="multipart/form-data" class="space-y-4">
+
+<!-- 照片 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm">
+    <h2 class="text-base font-bold text-gray-700 mb-3">📸 照片</h2>
+    <div class="flex items-center gap-4">
+        {% if garment and garment.photo %}
+        <img src="/uploads/{{ garment.thumbnail or garment.photo }}" class="w-24 h-24 rounded-xl object-cover" id="photo-preview">
+        {% else %}
+        <div class="w-24 h-24 rounded-xl bg-gray-100 flex items-center justify-center text-3xl" id="photo-preview-default">👔</div>
+        {% endif %}
+        <label class="flex-1">
+            <div class="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center hover:border-primary cursor-pointer">
+                <div class="text-2xl mb-1">📷</div>
+                <div class="text-sm text-gray-500">点击拍照或选择照片</div>
+            </div>
+            <input type="file" name="photo" accept="image/*" class="hidden" id="photo-input" onchange="previewPhoto(this)">
+        </label>
+    </div>
+</div>
+
+<!-- 基础信息 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm">
+    <h2 class="text-base font-bold text-gray-700 mb-3">📋 基础信息</h2>
+    <div class="space-y-3">
+        <div>
+            <label class="block text-sm font-medium text-gray-600 mb-1">名称 <span class="text-red-400">*</span></label>
+            <input type="text" name="name" required value="{{ garment.name if garment else '' }}"
+                   placeholder="例如：白色纯棉T恤" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary focus:ring-2 focus:ring-pink-200">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-600 mb-1">分类 <span class="text-red-400">*</span></label>
+            <div class="grid grid-cols-2 gap-2">
+                    <select name="category_id" class="px-3 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for cat in categories %}<option value="{{ cat.id }}" {% if garment and garment.category_id == cat.id %}selected{% endif %}>{{ cat.icon }} {{ cat.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="category_text" placeholder="或输入新分类"
+                           class="px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+                </div>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-600 mb-1">颜色</label>
+            <div class="grid grid-cols-2 gap-2">
+                    <select name="color_id" class="px-3 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for cp in color_presets %}<option value="{{ cp.name }}" {% if garment and garment.color == cp.name %}selected{% endif %}>{{ cp.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="color_text" value="{{ garment.color if garment else '' }}"
+                           placeholder="或输入新颜色"
+                           class="px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+                </div>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-600 mb-1">品牌</label>
+            <div class="grid grid-cols-2 gap-2">
+                    <select name="brand_id" class="px-3 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for b in brands %}<option value="{{ b.id }}" {% if garment and garment.brand_id == b.id %}selected{% endif %}>{{ b.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="brand_text" placeholder="或输入新品牌"
+                           class="px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+                </div>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-600 mb-1">季节</label>
+            <select name="season_group" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-primary">
+                <option value="">不限</option>
+                <option value="夏季" {% if garment and garment.season_group == '夏季' %}selected{% endif %}>☀️ 夏季</option>
+                <option value="冬季" {% if garment and garment.season_group == '冬季' %}selected{% endif %}>❄️ 冬季</option>
+                <option value="春秋季" {% if garment and garment.season_group == '春秋季' %}selected{% endif %}>🍃 春秋季</option>
+            </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">尺码</label>
+                <input type="text" name="size_label" value="{{ garment.size_label if garment else '' }}" placeholder="S / M / L / 均码"
+                       class="w-full px-2.5 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">材质</label>
+                <input type="text" name="material" value="{{ garment.material if garment else '' }}" placeholder="纯棉、羊毛"
+                       class="w-full px-2.5 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+            </div>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5 overflow-hidden">
+            <div class="min-w-0">
+                <label class="block text-sm font-medium text-gray-600 mb-1">价格 (¥)</label>
+                <input type="number" name="price" step="0.01" value="{{ garment.price if garment else '' }}" placeholder="199"
+                       class="w-full px-2 py-2 rounded-xl border border-gray-200 outline-none focus:border-primary text-xs">
+            </div>
+            <div class="min-w-0">
+                <label class="block text-sm font-medium text-gray-600 mb-1">购买日期</label>
+                <input type="date" name="purchase_date" value="{{ garment.purchase_date if garment and garment.purchase_date else '' }}"
+                       class="w-full px-1 py-2 rounded-xl border border-gray-200 outline-none focus:border-primary text-xs">
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 存放位置 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm border-l-4 border-green-400">
+    <h2 class="text-base font-bold text-gray-700 mb-1">📍 存放位置</h2>
+    <p class="text-xs text-gray-400 mb-3">从预设位置中选择</p>
+    <select name="location_preset_id" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-white outline-none focus:border-green-400">
+        <option value="">暂不标记位置</option>
+        {% for lp in location_presets %}
+        <option value="{{ lp.id }}" {% if garment and garment.location_preset_id == lp.id %}selected{% endif %}>
+            🏠 {{ lp.room }}{% if lp.position %} → {{ lp.position }}{% endif %}{% if lp.shelf %} → {{ lp.shelf }}{% endif %}{% if lp.box %} → 📦{{ lp.position }}{% endif %}
+        </option>
+        {% endfor %}
+    </select>
+    {% if not location_presets %}
+    <p class="text-xs text-orange-500 mt-2">还没有位置预设，去 <a href="/manage/locations" class="underline">管理 → 位置管理</a> 添加</p>
+    {% endif %}
+</div>
+
+<!-- 备注 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm">
+    <h2 class="text-base font-bold text-gray-700 mb-3">📝 备注</h2>
+    <textarea name="notes" rows="2" placeholder="任何想记录的信息..." class="w-full px-4 py-2.5 rounded-xl border outline-none focus:border-primary resize-none">{{ garment.notes if garment else '' }}</textarea>
+</div>
+
+<div class="flex gap-3">
+    <a href="{% if mode == 'edit' %}/garments/{{ garment.id }}{% else %}/{% endif %}" class="flex-1 py-3 rounded-xl border border-gray-300 text-gray-600 font-medium text-center no-underline">取消</a>
+    <button type="submit" class="flex-1 py-3 rounded-xl bg-primary text-white font-medium hover:bg-primary-dark">
+        {% if mode == 'new' %}➕ 添加{% else %}💾 保存{% endif %}
+    </button>
+</div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+function previewPhoto(input) {
+    if (input.files && input.files[0]) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var p = document.getElementById('photo-preview');
+            if (p) { p.src = e.target.result; }
+            else { var d = document.getElementById('photo-preview-default'); if(d) d.innerHTML = '<img src="'+e.target.result+'" class="w-full h-full rounded-xl object-cover" id="photo-preview">'; }
+        };
+        reader.readAsDataURL(input.files[0]);
+    }
+}
+</script>
+{% endblock %}

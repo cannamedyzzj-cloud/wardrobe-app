@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}智能录入 - Samantha的衣橱{% endblock %}
+{% block content %}
+
+<h1 class="text-xl font-bold text-gray-800 mb-1">📷 智能录入</h1>
+<p class="text-sm text-gray-400 mb-4">拍照 → 自动匹配已有衣物 或 录入新衣物</p>
+
+{% if not matched_garments and not smart_data %}
+<!-- ===== 初始状态：上传照片 ===== -->
+<form method="post" enctype="multipart/form-data">
+    <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <div id="upload-area" class="border-2 border-dashed border-pink-300 rounded-2xl p-8 text-center cursor-pointer hover:border-primary transition-colors" onclick="document.getElementById('photo-input').click()">
+            <div class="text-4xl mb-2">📷</div>
+            <div class="text-gray-600 font-medium">拍照或从相册选择</div>
+            <div class="text-xs text-gray-400 mt-1">自动匹配已有衣物，或录入新品</div>
+            <input type="file" name="photo" accept="image/*" class="hidden" id="photo-input" onchange="this.form.submit()">
+        </div>
+    </div>
+</form>
+{% endif %}
+
+{% if matched_garments and matched_garments|length > 0 %}
+<!-- ===== 匹配到了！===== -->
+<div class="bg-green-50 rounded-2xl p-5 mb-4">
+    <div class="text-lg font-bold text-green-700">✅ 找到了！这是已有的衣物</div>
+</div>
+
+{% for g in matched_garments %}
+<div class="bg-white rounded-2xl p-4 shadow-sm mb-3 flex gap-3 border-l-4 {% if g.score >= 80 %}border-green-400{% elif g.score >= 50 %}border-yellow-400{% else %}border-gray-300{% endif %}">
+    <div class="w-20 h-20 rounded-xl bg-gray-100 flex items-center justify-center overflow-hidden shrink-0">
+        {% if g.photo %}<img src="/uploads/{{ g.photo }}" class="w-full h-full object-cover">{% else %}<span class="text-3xl">👔</span>{% endif %}
+    </div>
+    <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+            <span class="font-medium text-gray-800 truncate">{{ g.name }}</span>
+            <span class="text-xs bg-pink-100 text-pink-600 px-1.5 py-0.5 rounded-full shrink-0">{{ g.score }}%</span>
+        </div>
+        <div class="text-xs text-gray-400">{{ g.category }} · {{ g.color }}</div>
+        <div class="mt-1">
+            {% if g.status == '在库' %}<span class="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">✅ 在库</span>
+            {% elif g.status == '取出' %}<span class="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">👋 已取出</span>
+            {% else %}<span class="text-xs bg-yellow-100 text-yellow-600 px-2 py-0.5 rounded-full">🔄 待归位</span>{% endif %}
+        </div>
+        <div class="mt-1 text-xs font-bold text-green-700">📍 {{ g.location }}</div>
+    </div>
+    <a href="/garments/{{ g.id }}" class="self-center text-gray-300 no-underline text-xl shrink-0">→</a>
+</div>
+{% endfor %}
+
+<!-- 不匹配，仍然录入 -->
+<form method="post" enctype="multipart/form-data" class="mt-4">
+    <input type="hidden" name="from_smart" value="confirm">
+    <input type="hidden" name="tmp_file" value="{{ smart_data.tmp_file }}">
+    <input type="hidden" name="fingerprint" value="{{ smart_data.fingerprint }}">
+    
+    <details class="bg-white rounded-2xl p-5 shadow-sm">
+        <summary class="font-medium text-gray-600 cursor-pointer">不是这些？点此录入新衣物</summary>
+        <div class="space-y-3 mt-3">
+            <input type="text" name="name" required placeholder="输入名称" value="{{ smart_data.color_display }}{{ smart_data.matched_category.name if smart_data.matched_category else '' }}" class="w-full px-4 py-2.5 rounded-xl border outline-none focus:border-primary">
+            <select name="category_id" required class="w-full px-4 py-2.5 rounded-xl border bg-white outline-none focus:border-primary">
+                <option value="">选择分类</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}" {% if smart_data.matched_category and smart_data.matched_category.id == cat.id %}selected{% endif %}>{{ cat.icon }} {{ cat.name }}</option>
+                {% endfor %}
+            </select>
+            <div class="grid grid-cols-2 gap-2">
+                    <select name="color_id" class="px-3 py-2.5 rounded-xl border bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for cp in color_presets %}<option value="{{ cp.name }}" {% if smart_data.color_display == cp.name %}selected{% endif %}>{{ cp.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="color_text" value="{{ smart_data.color_display }}"
+                           placeholder="或输入新颜色"
+                           class="px-3 py-2.5 rounded-xl border outline-none focus:border-primary text-sm">
+                </div>
+            <select name="location_preset_id" class="w-full px-4 py-2.5 rounded-xl border bg-white outline-none">
+                <option value="">暂不标记位置</option>
+                {% for lp in location_presets %}<option value="{{ lp.id }}">🏠 {{ lp.room }}{% if lp.position %} {{ lp.position }}{% endif %}</option>{% endfor %}
+            </select>
+            <button type="submit" class="w-full py-3 bg-primary text-white rounded-xl font-medium">✅ 确认录入</button>
+        </div>
+    </details>
+</form>
+
+{% elif smart_data and (not matched_garments or matched_garments|length == 0) %}
+<!-- ===== 没匹配到：直接录入 ===== -->
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-3">
+    <div class="text-sm text-gray-500 mb-3">🔍 未匹配到已有衣物 — 请确认以下信息并录入</div>
+    <img src="/uploads/{{ smart_data.tmp_file }}" class="w-full rounded-xl max-h-56 object-contain bg-gray-100">
+</div>
+
+<form method="post" enctype="multipart/form-data" class="space-y-4">
+    <input type="hidden" name="from_smart" value="confirm">
+    <input type="hidden" name="tmp_file" value="{{ smart_data.tmp_file }}">
+    <input type="hidden" name="fingerprint" value="{{ smart_data.fingerprint }}">
+    
+    <div class="bg-white rounded-2xl p-5 shadow-sm">
+        <div class="space-y-3">
+            <div>
+                            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">名称 <span class="text-red-400">*</span></label>
+                <input type="text" name="name" id="name-input" required placeholder="如：黑色毛衣"
+                       value="{{ smart_data.color_display }}{{ smart_data.matched_category.name if smart_data.matched_category else '' }}"
+                       class="w-full px-4 py-2.5 rounded-xl border outline-none focus:border-primary">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">分类 <span class="text-red-400">*</span></label>
+                <div class="grid grid-cols-2 gap-2">
+                    <select name="category_id" class="px-3 py-2.5 rounded-xl border bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for cat in categories %}<option value="{{ cat.id }}" {% if smart_data.matched_category and smart_data.matched_category.id == cat.id %}selected{% endif %}>{{ cat.icon }} {{ cat.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="category_text" placeholder="或输入新分类"
+                           class="px-3 py-2.5 rounded-xl border outline-none focus:border-primary text-sm">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">颜色</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <select name="color_id" class="px-3 py-2.5 rounded-xl border bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for cp in color_presets %}<option value="{{ cp.name }}" {% if smart_data.color_display == cp.name %}selected{% endif %}>{{ cp.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="color_text" value="{{ smart_data.color_display }}"
+                           placeholder="或输入新颜色"
+                           class="px-3 py-2.5 rounded-xl border outline-none focus:border-primary text-sm">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">品牌</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <select name="brand_id" class="px-3 py-2.5 rounded-xl border bg-white outline-none focus:border-primary text-sm">
+                        <option value="">选择</option>
+                        {% for b in brands %}<option value="{{ b.id }}">{{ b.name }}</option>{% endfor %}
+                    </select>
+                    <input type="text" name="brand_text" placeholder="或输入新品牌"
+                           class="px-3 py-2.5 rounded-xl border outline-none focus:border-primary text-sm">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">季节</label>
+                <select name="season_group" class="w-full px-4 py-2.5 rounded-xl border bg-white outline-none">
+                    <option value="">不限</option>
+                    <option value="夏季">☀️ 夏季</option>
+                    <option value="冬季">❄️ 冬季</option>
+                    <option value="春秋季">🍃 春秋季</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">存放位置</label>
+                <select name="location_preset_id" class="w-full px-4 py-2.5 rounded-xl border bg-white outline-none">
+                    <option value="">暂不标记</option>
+                    {% for lp in location_presets %}<option value="{{ lp.id }}">🏠 {{ lp.room }}{{ lp.position }}</option>{% endfor %}
+                </select>
+            </div>
+    </div>
+    <div class="flex gap-3">
+        <a href="/" class="flex-1 py-3 rounded-xl border border-gray-300 text-gray-600 font-medium text-center no-underline">取消</a>
+        <button type="submit" class="flex-1 py-3 rounded-xl bg-primary text-white font-medium hover:bg-primary-dark">✅ 确认录入</button>
+    </div>
+</form>
+{% endif %}
+
+{% endblock %}

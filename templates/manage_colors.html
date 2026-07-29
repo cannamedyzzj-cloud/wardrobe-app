@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}颜色管理 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="flex items-center gap-2 mb-4">
+    <a href="/manage" class="text-gray-400 no-underline hover:text-gray-600">← 管理</a>
+    <h1 class="text-xl font-bold text-gray-800">🎨 颜色管理</h1>
+</div>
+<p class="text-xs text-gray-400 mb-4">智能录入时自动收集识别到的颜色，也可以手动添加</p>
+
+<div class="bg-white rounded-2xl p-4 shadow-sm mb-4">
+    <form method="post" class="flex gap-1.5 max-w-full overflow-hidden">
+        <input type="hidden" name="action" value="add">
+        <input type="text" name="name" required placeholder="颜色名称"
+               class="flex-1 w-0 px-2.5 py-2.5 rounded-xl border outline-none focus:border-primary text-sm">
+        <button type="submit" class="px-2.5 py-2.5 bg-primary text-white rounded-xl font-medium text-xs hover:bg-primary-dark shrink-0">添加</button>
+    </form>
+</div>
+
+<div class="bg-white rounded-2xl shadow-sm overflow-hidden">
+{% for c in colors %}
+<div class="flex items-center justify-between px-5 py-3 border-b border-gray-100 last:border-0">
+    <span class="flex-1 font-medium text-gray-800">{{ c.name }}</span>
+    <span class="text-xs text-gray-400 mr-3">{{ c.garment_count }}件</span>
+    <button onclick="editRow({{ c.id }}, '{{ c.name }}')" class="w-8 h-8 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-sm">✏️</button>
+    <form method="post" onsubmit="return confirm('删除「{{ c.name }}」？')" class="inline ml-1">
+        <input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ c.id }}">
+        <button class="w-8 h-8 bg-red-50 hover:bg-red-100 rounded-full flex items-center justify-center text-sm">🗑️</button>
+    </form>
+</div>
+{% endfor %}
+</div>
+
+<div id="edit-modal" class="hidden fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl p-5 w-full max-w-sm shadow-xl">
+        <h3 class="text-lg font-bold text-gray-800 mb-3">✏️ 编辑颜色</h3>
+        <form method="post">
+            <input type="hidden" name="action" value="edit"><input type="hidden" name="id" id="edit-id">
+            <input type="text" name="name" id="edit-name" required class="w-full px-4 py-2.5 rounded-xl border outline-none focus:border-primary">
+            <div class="flex gap-2 mt-4">
+                <button type="button" onclick="document.getElementById('edit-modal').classList.add('hidden')" class="flex-1 py-2.5 rounded-xl border border-gray-300 text-gray-600">取消</button>
+                <button type="submit" class="flex-1 py-2.5 rounded-xl bg-primary text-white font-medium">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function editRow(id, name) {
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-name').value = name;
+    document.getElementById('edit-modal').classList.remove('hidden');
+}
+</script>
+{% endblock %}

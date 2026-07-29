@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}衣橱管理 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="mb-4 flex items-center justify-between">
+    <a href="/manage" class="text-gray-400 text-sm no-underline">← 返回管理</a>
+    <span class="text-xs bg-pink-100 text-primary-dark px-3 py-1 rounded-full font-medium">系统管理员</span>
+</div>
+
+<h2 class="text-base font-bold text-gray-600 mb-4">👗 衣橱管理</h2>
+
+<!-- 新建衣橱 -->
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4">
+    <h3 class="font-bold text-gray-700 mb-3 text-sm">新建衣橱</h3>
+    <form method="post" class="space-y-3">
+        <input type="hidden" name="action" value="create">
+        <div class="grid grid-cols-2 gap-3">
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">衣橱名称 *</label>
+                <input type="text" name="name" required placeholder="如：Samantha的衣橱" class="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">拥有者 *</label>
+                <select name="owner_user_id" required class="w-full px-3 py-2.5 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm bg-white">
+                    <option value="">选择用户</option>
+                    {% for u in all_users %}
+                    <option value="{{ u.id }}">{{ u.display_name or u.username }} (@{{ u.username }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="px-5 py-2.5 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary-dark transition-colors">创建衣橱</button>
+    </form>
+</div>
+
+{% if error %}
+<div class="bg-red-50 text-red-600 text-sm rounded-xl px-4 py-3 mb-4">{{ error }}</div>
+{% endif %}
+{% if success %}
+<div class="bg-green-50 text-green-600 text-sm rounded-xl px-4 py-3 mb-4">{{ success }}</div>
+{% endif %}
+
+<!-- 衣橱列表 -->
+<div class="space-y-3">
+    {% for w in wardrobes %}
+    <div class="bg-white rounded-2xl p-4 shadow-sm {% if not w.is_active %}opacity-60{% endif %}">
+        <div class="flex items-start justify-between mb-2">
+            <div>
+                <div class="font-bold text-gray-800">{{ w.name }}</div>
+                <div class="text-xs text-gray-400">拥有者：{{ w.owner.display_name or w.owner.username }} · {{ w.member_count }} 个成员</div>
+            </div>
+            <span class="text-xs {% if w.is_active %}bg-green-100 text-green-600{% else %}bg-red-100 text-red-400{% endif %} px-2 py-0.5 rounded-full">{{ '启用' if w.is_active else '已禁用' }}</span>
+        </div>
+        <div class="flex gap-2">
+            <button onclick="editWardrobe({{ w.id }}, '{{ w.name }}', {{ w.owner_user_id }})" class="text-xs px-3 py-1.5 rounded-lg bg-blue-50 text-blue-500 hover:opacity-80">编辑</button>
+            <form method="post" class="inline">
+                <input type="hidden" name="action" value="toggle_active">
+                <input type="hidden" name="wardrobe_id" value="{{ w.id }}">
+                <button type="submit" class="text-xs px-3 py-1.5 rounded-lg {% if w.is_active %}bg-red-50 text-red-500{% else %}bg-green-50 text-green-500{% endif %} hover:opacity-80">
+                    {{ '禁用' if w.is_active else '启用' }}
+                </button>
+            </form>
+            <a href="/admin/wardrobes/{{ w.id }}/members" class="text-xs px-3 py-1.5 rounded-lg bg-purple-50 text-purple-500 hover:opacity-80 no-underline">成员管理</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- 编辑衣橱弹窗 -->
+<div id="edit-modal" class="hidden fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
+        <h3 class="font-bold text-gray-800 mb-3">编辑衣橱</h3>
+        <form method="post" class="space-y-3">
+            <input type="hidden" name="action" value="edit">
+            <input type="hidden" name="wardrobe_id" id="edit-wardrobe-id">
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">衣橱名称</label>
+                <input type="text" name="name" id="edit-wardrobe-name" required class="w-full px-4 py-3 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">拥有者</label>
+                <select name="owner_user_id" id="edit-wardrobe-owner" class="w-full px-4 py-3 rounded-xl border border-gray-200 outline-none focus:border-primary text-sm bg-white">
+                    {% for u in all_users %}
+                    <option value="{{ u.id }}">{{ u.display_name or u.username }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="flex gap-2">
+                <button type="button" onclick="document.getElementById('edit-modal').classList.add('hidden')" class="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-600 text-sm">取消</button>
+                <button type="submit" class="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary-dark">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function editWardrobe(id, name, ownerId) {
+    document.getElementById('edit-wardrobe-id').value = id;
+    document.getElementById('edit-wardrobe-name').value = name;
+    document.getElementById('edit-wardrobe-owner').value = ownerId;
+    document.getElementById('edit-modal').classList.remove('hidden');
+}
+</script>
+{% endblock %}

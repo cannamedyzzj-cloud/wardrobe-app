@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}管理 - Samantha的衣橱{% endblock %}
+{% block content %}
+{% if current_user.is_authenticated %}
+<div class="bg-white rounded-2xl p-4 shadow-sm mb-4 flex items-center justify-between">
+    <span class="font-medium text-gray-800">{{ current_user.display_name or current_user.username }}</span>
+    <span class="text-xs text-gray-400">{% if current_w %}{{ current_w.name }}{% endif %}</span>
+</div>
+{% endif %}
+
+
+<h2 class="text-base font-bold text-gray-600 mb-3">📦 衣橱管理</h2>
+<div class="grid gap-3 mb-6">
+    <a href="/manage/categories" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">📁</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">分类管理</div><div class="text-sm text-gray-400">{{ cat_count }} 个分类</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+    <a href="/manage/brands" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">🏷️</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">品牌管理</div><div class="text-sm text-gray-400">{{ brand_count }} 个品牌</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+    <a href="/manage/colors" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">🎨</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">颜色管理</div><div class="text-sm text-gray-400">{{ color_count }} 个颜色</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+    <a href="/manage/locations" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">📍</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">位置管理</div><div class="text-sm text-gray-400">{{ loc_count }} 个位置</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+</div>
+
+<h2 class="text-base font-bold text-gray-600 mb-3">💾 数据管理</h2>
+<div class="grid gap-3">
+    <a href="/export" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">💾</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">数据备份</div><div class="text-sm text-gray-400">下载包含照片的完整备份包（ZIP）</div></div>
+            <span class="text-gray-300">↓</span>
+        </div>
+    </a>
+</div>
+{% if current_user.is_system_admin %}
+<h2 class="text-base font-bold text-gray-600 mb-3 mt-6">⚙️ 系统管理</h2>
+<div class="grid gap-3">
+    <a href="/admin/users" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">👥</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">用户管理</div><div class="text-sm text-gray-400">管理系统用户账号</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+    <a href="/admin/wardrobes" class="block bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow no-underline">
+        <div class="flex items-center gap-4">
+            <span class="text-3xl">👗</span>
+            <div class="flex-1"><div class="font-bold text-gray-800">衣橱管理</div><div class="text-sm text-gray-400">管理衣橱和成员</div></div>
+            <span class="text-gray-300">→</span>
+        </div>
+    </a>
+</div>
+{% endif %}
+{% endblock %}

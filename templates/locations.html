@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}位置浏览 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-bold text-gray-800">📍 按位置浏览</h1>
+    <a href="/manage/locations" class="bg-pink-50 border-2 border-dashed border-pink-200 rounded-2xl px-4 py-2 text-sm text-gray-500 no-underline hover:border-primary">➕ 管理位置</a>
+</div>
+
+{% if preset_data %}
+<div class="space-y-3">
+{% for item in preset_data %}
+<a href="/garments?location={{ item.preset.id }}" class="bg-white rounded-2xl p-4 shadow-sm flex items-center gap-4 hover:shadow-md no-underline">
+    <span class="text-3xl">🏠</span>
+    <div class="flex-1">
+        <div class="font-medium text-gray-800">
+            {{ item.preset.room }}{{ item.preset.position }}
+        </div>
+    </div>
+    <span class="bg-pink-100 text-primary-dark px-3 py-1 rounded-full text-sm font-bold">{{ item.count }} 件</span>
+</a>
+{% endfor %}
+</div>
+{% else %}
+<div class="bg-white rounded-2xl p-12 text-center shadow-sm">
+    <div class="text-5xl mb-4">📍</div>
+    <p class="text-gray-500 mb-4">还没有标记任何衣物的位置</p>
+    <a href="/manage/locations" class="inline-block bg-primary text-white px-6 py-2.5 rounded-full font-medium no-underline">添加位置</a>
+</div>
+{% endif %}
+{% endblock %}
