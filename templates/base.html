@@ -163,7 +163,10 @@
             {% if current_user.is_system_admin %}
             <a href="/admin/users" class="block px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 no-underline transition-colors">⚙️ 系统管理</a>
             {% endif %}
-            <a href="/logout" class="block px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 no-underline transition-colors border-t border-gray-50">退出登录</a>
+            <form method="post" action="/logout" class="block">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="w-full text-left block px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 transition-colors border-t border-gray-50">退出登录</button>
+            </form>
         </div>
     </nav>
 

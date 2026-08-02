@@ -21,7 +21,10 @@
             <h2 class="text-xl font-bold text-gray-800 mb-2">暂无可用衣橱</h2>
             <p class="text-gray-500 text-sm mb-4">你的账号尚未加入任何衣橱，请联系管理员将你添加到衣橱中。</p>
             <div class="text-xs text-gray-400 mb-4">当前账号：{{ current_user.display_name or current_user.username }}</div>
-            <a href="/logout" class="inline-block px-6 py-2.5 rounded-xl bg-pink-50 text-primary-dark font-medium text-sm no-underline hover:bg-pink-100 transition-colors">退出登录</a>
+            <form method="post" action="/logout" class="inline-block">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="inline-block px-6 py-2.5 rounded-xl bg-pink-50 text-primary-dark font-medium text-sm hover:bg-pink-100 transition-colors">退出登录</button>
+            </form>
         </div>
     </div>
 </body>

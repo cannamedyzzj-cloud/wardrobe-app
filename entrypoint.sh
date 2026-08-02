@@ -29,14 +29,28 @@ else
     echo "Storage ID 验证通过: ${SID_SHORT}..."
 fi
 
-# 3. 数据库迁移（仅在数据库已存在时执行）
+# 3. 数据库迁移（仅在数据库存在且未达到最新时执行）
 echo "--- 数据库检查 ---"
 DB_PATH="/app/data/db/wardrobe.sqlite3"
 
 if [ -f "$DB_PATH" ]; then
-    echo "数据库存在，运行迁移..."
-    flask db upgrade
-    echo "迁移完成"
+    # 检查是否需要迁移
+    CURRENT=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$DB_PATH')
+try:
+    row = conn.execute(\"SELECT version_num FROM alembic_version\").fetchone()
+    print(row[0] if row else 'none')
+except:
+    print('none')
+" 2>/dev/null)
+    
+    if [ "$CURRENT" = "none" ] || [ -z "$CURRENT" ]; then
+        echo "数据库无迁移记录，运行迁移..."
+        flask db upgrade
+    else
+        echo "数据库版本: $CURRENT，跳过迁移（升级迁移需手动在维护模式下执行）"
+    fi
 else
     echo ""
     echo "生产数据库不存在于: $DB_PATH"

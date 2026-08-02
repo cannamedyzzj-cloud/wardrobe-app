@@ -7,12 +7,23 @@ from urllib.parse import urlsplit
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, session, abort, flash, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
+from pathlib import Path
 from PIL import Image
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-me')
+
+# P0: 生产环境 SECRET_KEY 安全检查
+_key = app.config['SECRET_KEY']
+if not _key or _key in ('change-me', 'change-me-to-a-random-string') or len(_key) < 16:
+    if os.environ.get('FLASK_ENV') != 'development':
+        raise RuntimeError("生产环境必须设置安全的 SECRET_KEY（至少16字符），不可使用默认值")
+
+# CSRF 保护
+csrf = CSRFProtect(app)
 
 # Session Cookie 固定配置（防止 Safari 多 Cookie 冲突）
 app.config['SESSION_COOKIE_NAME'] = 'samantha_session'
@@ -112,7 +123,7 @@ class WardrobeMember(db.Model):
 class Category(db.Model):
     __tablename__ = 'categories'
     id = db.Column(db.Integer, primary_key=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     name = db.Column(db.String(50), nullable=False)
     icon = db.Column(db.String(10), default='\U0001f454')
     sort_order = db.Column(db.Integer, default=0)
@@ -121,7 +132,7 @@ class Category(db.Model):
 class Brand(db.Model):
     __tablename__ = 'brands'
     id = db.Column(db.Integer, primary_key=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     name = db.Column(db.String(100), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
     garments = db.relationship('Garment', backref='brand_rel', lazy='dynamic')
@@ -129,14 +140,14 @@ class Brand(db.Model):
 class ColorPreset(db.Model):
     __tablename__ = 'color_presets'
     id = db.Column(db.Integer, primary_key=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     name = db.Column(db.String(50), nullable=False)
     sort_order = db.Column(db.Integer, default=0)
 
 class LocationPreset(db.Model):
     __tablename__ = 'location_presets'
     id = db.Column(db.Integer, primary_key=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     name = db.Column(db.String(200), nullable=False)
     room = db.Column(db.String(100))
     position = db.Column(db.String(100))
@@ -146,7 +157,7 @@ class LocationPreset(db.Model):
 class Garment(db.Model):
     __tablename__ = 'garments'
     id = db.Column(db.Integer, primary_key=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     created_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     updated_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     name = db.Column(db.String(200), nullable=False)
@@ -185,7 +196,7 @@ class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     actor_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
-    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=False, index=True)
     action = db.Column(db.String(50), nullable=False, index=True)
     target_type = db.Column(db.String(50), nullable=True)
     target_id = db.Column(db.Integer, nullable=True)
@@ -245,6 +256,12 @@ def _read_storage_id():
         with open(sf) as f:
             return f.read().strip()
     return 'unknown'
+
+def _get_alembic_rev():
+    try:
+        return db.session.execute(db.text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:
+        return 'unknown'
 
 def preflight_check():
     """
@@ -539,6 +556,7 @@ def admin_required(f):
 # ========== 认证路由 ==========
 
 @app.route('/login', methods=['GET', 'POST'])
+@csrf.exempt
 def login():
     if current_user.is_authenticated:
         # 已登录 → 根据衣橱情况决定去向
@@ -568,7 +586,8 @@ def login():
         db.session.commit()
     return render_template('login.html', error=error)
 
-@app.route('/logout', methods=['GET', 'POST'])
+@app.route('/logout', methods=['POST'])
+@csrf.exempt
 @login_required
 def logout():
     AuditLog.log('user.logout', summary=f'{current_user.username} 登出')
@@ -579,7 +598,7 @@ def logout():
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private, max-age=0'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
-    response.delete_cookie('session', path='/')
+    response.delete_cookie(app.config['SESSION_COOKIE_NAME'], path=app.config['SESSION_COOKIE_PATH'])
     response.delete_cookie('remember_token', path='/')
     return response
 
@@ -823,7 +842,8 @@ def _save_garment(garment):
     if bname:
         brand = wq(Brand).filter_by(name=bname).first()
         if not brand:
-            mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
+            w = current_wardrobe()
+            mo = db.session.query(db.func.max(Brand.sort_order)).filter(Brand.wardrobe_id == w.id).scalar() or 0
             brand = Brand(name=bname, sort_order=mo+1)
             db.session.add(brand)
             db.session.flush()
@@ -925,6 +945,10 @@ def garment_clone(id):
     c = Garment(name=f"{o.name} (\u526f\u672c)", category_id=o.category_id, brand_id=o.brand_id,
                 location_preset_id=o.location_preset_id, color=o.color, material=o.material,
                 season_group=o.season_group, price=o.price, size_label=o.size_label, notes=o.notes)
+    w = current_wardrobe()
+    if w: c.wardrobe_id = w.id
+    c.created_by_user_id = current_user.id
+    # 不复制照片——进入编辑页让用户重新确认
     db.session.add(c); db.session.commit()
     return redirect(url_for('garment_edit', id=c.id))
 
@@ -1018,7 +1042,7 @@ def garment_smart():
                     'score': int(score * 100),
                     'location': format_storage_location(g),
                     'lp': {'room': g.location_preset.room if g.location_preset else '',
-                           'box': g.location_preset.position if g.location_preset else ''}
+                           'position': g.location_preset.position if g.location_preset else ''}
                 })
             
             # 准备智能录入数据（不管是否匹配都准备好）
@@ -1073,7 +1097,8 @@ def garment_smart():
         if bn:
             brand = wq(Brand).filter_by(name=bn).first()
             if not brand:
-                mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
+                w = current_wardrobe()
+                mo = db.session.query(db.func.max(Brand.sort_order)).filter(Brand.wardrobe_id == w.id).scalar() or 0
                 brand = Brand(name=bn, sort_order=mo+1)
                 db.session.add(brand)
                 db.session.flush()
@@ -1084,7 +1109,7 @@ def garment_smart():
         if g.color and g.color.strip():
             cn = g.color.strip()
             if not wq(ColorPreset).filter_by(name=cn).first():
-                mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
+                mo = db.session.query(db.func.max(ColorPreset.sort_order)).filter(ColorPreset.wardrobe_id == w.id).scalar() or 0
                 db.session.add(ColorPreset(name=cn, sort_order=mo+1))
         db.session.add(g); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
@@ -1165,7 +1190,8 @@ def manage_categories():
         if a == 'add':
             n = request.form.get('name','').strip()
             if n:
-                mo = db.session.query(db.func.max(Category.sort_order)).scalar() or 0
+                w = current_wardrobe()
+                mo = db.session.query(db.func.max(Category.sort_order)).filter(Category.wardrobe_id == w.id).scalar() or 0
                 db.session.add(Category(name=n, icon=request.form.get('icon','\U0001f4e6').strip(), sort_order=mo+1))
                 db.session.commit()
         elif a == 'edit':
@@ -1186,7 +1212,8 @@ def manage_brands():
         if a == 'add':
             n = request.form.get('name','').strip()
             if n:
-                mo = db.session.query(db.func.max(Brand.sort_order)).scalar() or 0
+                w = current_wardrobe()
+                mo = db.session.query(db.func.max(Brand.sort_order)).filter(Brand.wardrobe_id == w.id).scalar() or 0
                 db.session.add(Brand(name=n, sort_order=mo+1)); db.session.commit()
         elif a == 'edit':
             b = wq(Brand).get(request.form.get('id', type=int))
@@ -1206,7 +1233,7 @@ def manage_colors():
         if a == 'add':
             n = request.form.get('name','').strip()
             if n:
-                mo = db.session.query(db.func.max(ColorPreset.sort_order)).scalar() or 0
+                mo = db.session.query(db.func.max(ColorPreset.sort_order)).filter(ColorPreset.wardrobe_id == w.id).scalar() or 0
                 db.session.add(ColorPreset(name=n, sort_order=mo+1)); db.session.commit()
         elif a == 'edit':
             c = wq(ColorPreset).get(request.form.get('id', type=int))
@@ -1226,16 +1253,19 @@ def manage_locations():
         if a == 'add':
             room = request.form.get('room','').strip()
             if room:
-                cab, shelf, box = [request.form.get(x,'').strip() for x in ['cabinet','shelf','box']]
-                mo = db.session.query(db.func.max(LocationPreset.sort_order)).scalar() or 0
-                display = ' \u2192 '.join(filter(None, [room, cab, shelf, box]))
-                db.session.add(LocationPreset(name=display, room=room, cabinet=cab, shelf=shelf, box=box, sort_order=mo+1))
+                pos = request.form.get('position','').strip()
+                w = current_wardrobe()
+                mo = db.session.query(db.func.max(LocationPreset.sort_order)).filter_by(wardrobe_id=w.id).scalar() or 0
+                display = ' → '.join(filter(None, [room, pos]))
+                lp = LocationPreset(name=display, room=room, position=pos, sort_order=mo+1)
+                if w: lp.wardrobe_id = w.id
+                db.session.add(lp)
                 db.session.commit()
         elif a == 'edit':
             lp = wq(LocationPreset).get(request.form.get('id', type=int))
             if lp:
-                for f in ['room','cabinet','shelf','box']: setattr(lp, f, request.form.get(f,'').strip())
-                lp.name = ' \u2192 '.join(filter(None, [lp.room, lp.cabinet, lp.shelf, lp.position]))
+                for f in ['room','position']: setattr(lp, f, request.form.get(f,'').strip())
+                lp.name = ' → '.join(filter(None, [lp.room, lp.position]))
                 db.session.commit()
         elif a == 'delete':
             lp = wq(LocationPreset).get(request.form.get('id', type=int))
@@ -1295,7 +1325,7 @@ def service_worker():
 
 @app.route('/healthz')
 def healthz():
-    status = {"status": "ok", "app_version": "1.2.0"}
+    status = {"status": "ok", "app_version": "1.3.0"}
     try:
         db.session.execute(db.text("SELECT 1"))
         status["database"] = "ok"
@@ -1697,8 +1727,8 @@ def backup_system():
         "backup_version": 1,
         "backup_type": "system",
         "created_at": datetime.utcnow().isoformat(),
-        "app_version": "1.2.0",
-        "schema_revision": "8a3f1c02d4e5",
+        "app_version": "1.3.0",
+        "schema_revision": _get_alembic_rev(),
         "installation_id": _read_storage_id(),
         "database_sha256": "",
         "user_count": user_count,
@@ -1862,10 +1892,12 @@ def verify_backup():
 
         if fail > 0:
             print(f"\n❌ 验证失败: {ok} 通过, {fail} 失败")
+            raise SystemExit(1)
         else:
             print(f"\n✅ 验证通过: {ok} 文件校验一致")
     except Exception as e:
         print(f"❌ 验证异常: {e}")
+        raise SystemExit(1)
 
 @app.cli.command("restore-system")
 def restore_system():
@@ -2155,6 +2187,11 @@ def seed_defaults():
     db.session.commit()
     print(f"✅ 已为衣橱 '{w.name}' (id={wid}) 初始化默认分类和品牌")
 
+# 开发入口（仅本地调试使用，生产始终使用 Gunicorn）
 if __name__ == '__main__':
-    with app.app_context(): init_db()
-    app.run(host='0.0.0.0', port=3000, debug=True)
+    import sys
+    if '--prod' in sys.argv:
+        print("生产环境请使用 Gunicorn: gunicorn -b 0.0.0.0:3000 app:app")
+    else:
+        print("⚠️ 调试模式启动（仅开发使用）")
+        app.run(host='127.0.0.1', port=5000, debug=False)
