@@ -1,48 +1,50 @@
 #!/bin/sh
 set -e
 
-echo "=== Samantha的衣橱启动 ==="
+echo "=== Samantha的衣橱 v1.2.0 启动 ==="
 
-# 1. 创建必要目录
+# 1. 创建运行时目录（不创建数据库）
 mkdir -p /app/data/db /app/data/media /app/data/tmp /app/data/backups /app/data/migration_reports
 
-# 2. 数据库迁移
-echo "--- 数据库检查 ---"
-python3 -c "
-import sqlite3, os
-db_path = '/app/data/db/wardrobe.sqlite3'
-if os.path.exists(db_path):
-    conn = sqlite3.connect(db_path)
-    tables = [r[0] for r in conn.execute('SELECT name FROM sqlite_master WHERE type=\"table\"')]
-    has_alembic = 'alembic_version' in tables
-    print(f'has_alembic={has_alembic}')
-else:
-    print('has_alembic=False')
-" > /tmp/db_state.txt
-
-if grep -q "has_alembic=False" /tmp/db_state.txt; then
-    # 没有 alembic 版本记录 → 全新或旧版数据库
-    echo "首次启动，运行数据库迁移..."
-    flask db upgrade
+# 2. Storage ID — 首次启动生成，之后验证
+if [ ! -f /app/data/.wardrobe-storage-id ]; then
+    if [ -n "$EXPECTED_STORAGE_ID" ]; then
+        echo "$EXPECTED_STORAGE_ID" > /app/data/.wardrobe-storage-id
+        echo "Storage ID 已设置: $(echo "$EXPECTED_STORAGE_ID" | cut -c1-8)..."
+    else
+        python3 -c "import uuid; print(uuid.uuid4())" > /app/data/.wardrobe-storage-id
+        echo "Storage ID 已生成: $(head -c 8 /app/data/.wardrobe-storage-id)..."
+    fi
 else
-    # 有 alembic → 升级到最新
-    echo "已有迁移记录，升级..."
-    flask db upgrade
+    SID=$(cat /app/data/.wardrobe-storage-id)
+    SID_SHORT=$(echo "$SID" | cut -c1-8)
+    if [ -n "$EXPECTED_STORAGE_ID" ] && [ "$SID" != "$EXPECTED_STORAGE_ID" ]; then
+        EXPECTED_SHORT=$(echo "$EXPECTED_STORAGE_ID" | cut -c1-8)
+        echo "Storage ID 不匹配！可能挂载了错误的数据目录。"
+        echo "   期望: ${EXPECTED_SHORT}..."
+        echo "   实际: ${SID_SHORT}..."
+        echo "   已拒绝启动以防止数据损坏。"
+        exit 1
+    fi
+    echo "Storage ID 验证通过: ${SID_SHORT}..."
 fi
 
-# 3. 默认数据
-python3 -c "
-from app import app, db, Category, Brand
-with app.app_context():
-    if Category.query.count() == 0:
-        from app import DEFAULT_CATEGORIES, DEFAULT_BRANDS
-        for icon, name, order in DEFAULT_CATEGORIES:
-            db.session.add(Category(name=name, icon=icon, sort_order=order))
-        for name, order in DEFAULT_BRANDS:
-            db.session.add(Brand(name=name, sort_order=order))
-        db.session.commit()
-        print('默认数据已初始化')
-"
+# 3. 数据库迁移（仅在数据库已存在时执行）
+echo "--- 数据库检查 ---"
+DB_PATH="/app/data/db/wardrobe.sqlite3"
+
+if [ -f "$DB_PATH" ]; then
+    echo "数据库存在，运行迁移..."
+    flask db upgrade
+    echo "迁移完成"
+else
+    echo ""
+    echo "生产数据库不存在于: $DB_PATH"
+    echo "如果是全新安装，请运行: flask install-new-instance"
+    echo "如果数据应该已存在，请检查挂载的数据目录是否正确。"
+    echo "为防止创建空数据库，应用已停止启动。"
+    exit 1
+fi
 
 echo "--- 启动 Gunicorn ---"
 exec gunicorn --bind 0.0.0.0:3000 --workers 2 --timeout 120 app:app

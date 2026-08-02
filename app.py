@@ -30,7 +30,7 @@ app.config['DATA_PATH'] = _data_path
 db = SQLAlchemy(app)
 
 # Flask-Migrate（数据库迁移）
-from flask_migrate import Migrate
+from flask_migrate import Migrate, stamp as migrate_stamp
 migrate = Migrate(app, db)
 
 # Flask-Login
@@ -165,18 +165,54 @@ class Garment(db.Model):
 DEFAULT_CATEGORIES = [('\U0001f455','\u4e0a\u8863',1),('\U0001f456','\u88e4\u5b50',2),('\U0001f457','\u88d9\u5b50',3),('\U0001f9e5','\u5916\u5957',4),('\U0001f9e3','\u914d\u9970',5)]
 DEFAULT_BRANDS = [('\u4f18\u8863\u5e93',1),('ZARA',2),('H&M',3),('\u65e0\u54c1\u724c',4)]
 
-def init_db():
+def ensure_data_dirs():
+    """仅创建运行时目录，不创建数据库"""
     for d in [app.config['UPLOAD_FOLDER'], app.config['TMP_FOLDER'],
               app.config['BACKUP_FOLDER'], app.config['REPORT_FOLDER']]:
         os.makedirs(d, exist_ok=True)
-    db.create_all()
-    if Category.query.count() == 0:
-        for icon, name, order in DEFAULT_CATEGORIES:
-            db.session.add(Category(name=name, icon=icon, sort_order=order))
-    if Brand.query.count() == 0:
-        for name, order in DEFAULT_BRANDS:
-            db.session.add(Brand(name=name, sort_order=order))
-    db.session.commit()
+
+def verify_storage_id():
+    """验证持久化目录身份，防止挂载到空目录"""
+    storage_id_file = os.path.join(_data_path, '.wardrobe-storage-id')
+    expected = os.environ.get('EXPECTED_STORAGE_ID', '')
+    if os.path.exists(storage_id_file):
+        with open(storage_id_file) as f:
+            actual = f.read().strip()
+        if expected and actual != expected:
+            return False, f"Storage ID 不匹配: 期望 {expected[:8]}..., 实际 {actual[:8]}..."
+        return True, actual
+    else:
+        # 首次安装 — 创建 storage ID
+        sid = str(uuid.uuid4())
+        if expected:
+            sid = expected
+        with open(storage_id_file, 'w') as f:
+            f.write(sid)
+        return True, sid
+
+def preflight_check():
+    """
+    启动前检查。返回 (ok, message)。
+    如果数据库不存在，拒绝启动（防止空挂载自动创建新库）。
+    """
+    errors = []
+    # 1. DATA_PATH 必须是绝对路径
+    if not os.path.isabs(_data_path):
+        errors.append(f"DATA_PATH 必须是绝对路径: {_data_path}")
+    # 2. 数据库文件必须存在
+    db_path = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
+    if not os.path.exists(db_path):
+        errors.append(
+            f"生产数据库不存在: {db_path}\n"
+            f"可能挂载了错误的数据目录。为防止创建空数据库，应用已停止启动。"
+        )
+    # 3. storage ID
+    ok, sid = verify_storage_id()
+    if not ok:
+        errors.append(sid)
+    if errors:
+        return False, '; '.join(errors)
+    return True, f"OK (storage={sid[:8]}...)"
 
 def save_photo(file):
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -1046,20 +1082,79 @@ def service_worker():
 
 @app.route('/healthz')
 def healthz():
-    status = {"status": "ok", "app_version": "1.0.0"}
+    status = {"status": "ok", "app_version": "1.2.0"}
     try:
         db.session.execute(db.text("SELECT 1"))
         status["database"] = "ok"
         status["database_writable"] = True
+        # 尝试读取 schema revision
+        try:
+            rev = db.session.execute(db.text("SELECT version_num FROM alembic_version")).scalar()
+            status["schema"] = rev
+        except Exception:
+            status["schema"] = "unknown"
     except Exception as e:
         status["database"] = str(e)
         status["database_writable"] = False
         return status, 500
     data_path = app.config.get('DATA_PATH', '')
     status["data_path"] = "ok" if data_path and os.path.isdir(data_path) else "missing"
+    # Storage ID
+    try:
+        ok, sid = verify_storage_id()
+        status["storage"] = "ok" if ok else "mismatch"
+    except Exception:
+        status["storage"] = "error"
     return status
 
 # ========== CLI 命令 ==========
+
+@app.cli.command("preflight")
+def preflight_cmd():
+    """启动前检查：验证数据目录、数据库、Storage ID"""
+    ensure_data_dirs()
+    ok, msg = preflight_check()
+    if ok:
+        print(f"✅ 预检通过: {msg}")
+    else:
+        print(f"❌ 预检失败: {msg}")
+        raise SystemExit(1)
+
+@app.cli.command("install-new-instance")
+def install_new_instance():
+    """全新安装：创建数据库、运行迁移、初始化默认数据。仅在数据库不存在时可用。"""
+    db_path = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
+    if os.path.exists(db_path):
+        print(f"❌ 数据库已存在: {db_path}")
+        print("   如需重新安装，请先备份并手动删除数据库文件。")
+        raise SystemExit(1)
+    # 确认
+    print(f"将在以下位置创建新数据库:")
+    print(f"   {db_path}")
+    print(f"   DATA_PATH: {_data_path}")
+    confirm = input("确认创建？(yes/no): ").strip().lower()
+    if confirm != 'yes':
+        print("已取消")
+        return
+    # 创建目录
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    ensure_data_dirs()
+    # 创建 storage ID
+    ok, sid = verify_storage_id()
+    print(f"Storage ID: {sid[:8]}...")
+    # 创建所有表
+    db.create_all()
+    # 初始化 Alembic 版本
+    with app.app_context():
+        migrate_stamp(revision='head')
+    # 初始化默认数据
+    for icon, name, order in DEFAULT_CATEGORIES:
+        db.session.add(Category(name=name, icon=icon, sort_order=order))
+    for name, order in DEFAULT_BRANDS:
+        db.session.add(Brand(name=name, sort_order=order))
+    db.session.commit()
+    print(f"✅ 新实例已创建: {db_path}")
+    print(f"   请设置环境变量 EXPECTED_STORAGE_ID={sid}")
 
 @app.cli.command("backup-system")
 def backup_system():
