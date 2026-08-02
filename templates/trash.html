@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}回收站 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="mb-4 flex items-center justify-between">
+    <a href="/garments" class="text-gray-400 text-sm no-underline">← 返回衣物</a>
+    <span class="text-xs bg-orange-100 text-orange-600 px-3 py-1 rounded-full">{{ garments|length }} 件</span>
+</div>
+
+<h2 class="text-base font-bold text-gray-600 mb-4">🗑️ 回收站</h2>
+
+{% if garments %}
+<div class="bg-white rounded-2xl shadow-sm mb-4">
+    {% for g in garments %}
+    <div class="flex items-center gap-3 p-4 {% if not loop.last %}border-b border-gray-50{% endif %}">
+        <div class="w-12 h-12 rounded-xl bg-gray-100 flex-shrink-0 overflow-hidden">
+            {% if g.thumbnail %}<img src="/uploads/{{ g.thumbnail }}" class="w-full h-full object-cover">{% else %}<div class="w-full h-full flex items-center justify-center text-gray-400">📦</div>{% endif %}
+        </div>
+        <div class="flex-1 min-w-0">
+            <div class="font-medium text-gray-800 text-sm truncate">{{ g.name }}</div>
+            <div class="text-xs text-gray-400">{{ g.category.name if g.category else '' }} · 删除于 {{ g.deleted_at.strftime('%m-%d %H:%M') if g.deleted_at else '' }}</div>
+        </div>
+        <div class="flex gap-1.5 flex-shrink-0">
+            <form method="post" action="/trash/garments/{{ g.id }}/restore">
+                <button class="text-xs px-3 py-1.5 rounded-lg bg-green-50 text-green-600 hover:opacity-80">恢复</button>
+            </form>
+            <form method="post" action="/trash/garments/{{ g.id }}/purge" onsubmit="return confirm('永久删除 {{ g.name }}？此操作不可恢复。')">
+                <button class="text-xs px-3 py-1.5 rounded-lg bg-red-50 text-red-500 hover:opacity-80">彻底删除</button>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if garments|length > 0 %}
+<div class="text-center">
+    <form method="post" action="/trash/empty" onsubmit="return confirm('确认清空回收站？所有 {{ garments|length }} 件衣物将被永久删除。')">
+        <button class="text-sm px-6 py-2.5 rounded-xl bg-red-500 text-white font-medium hover:bg-red-600">清空回收站（{{ garments|length }}件）</button>
+    </form>
+</div>
+{% endif %}
+{% else %}
+<div class="bg-white rounded-2xl p-8 shadow-sm text-center">
+    <div class="text-4xl mb-3">🗑️</div>
+    <div class="text-gray-500 text-sm">回收站为空</div>
+</div>
+{% endif %}
+{% endblock %}

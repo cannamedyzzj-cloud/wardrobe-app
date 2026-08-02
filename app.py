@@ -75,6 +75,8 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login_at = db.Column(db.DateTime)
+    # v1.3: 会话版本（改密码/撤销登录时递增）
+    session_version = db.Column(db.Integer, default=0)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -169,6 +171,44 @@ class Garment(db.Model):
     custom_size = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # v1.3: 回收站
+    deleted_at = db.Column(db.DateTime, nullable=True)
+    deleted_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+
+
+# ============================================================
+# v1.3 新增：审计日志
+# ============================================================
+
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
+    wardrobe_id = db.Column(db.Integer, db.ForeignKey('wardrobes.id'), nullable=True, index=True)
+    action = db.Column(db.String(50), nullable=False, index=True)
+    target_type = db.Column(db.String(50), nullable=True)
+    target_id = db.Column(db.Integer, nullable=True)
+    summary = db.Column(db.String(500), nullable=True)
+    metadata_json = db.Column(db.Text, nullable=True)
+
+    actor = db.relationship('User')
+
+    @classmethod
+    def log(cls, action, actor_id=None, wardrobe_id=None, target_type=None, target_id=None, summary='', meta=None):
+        try:
+            aid = actor_id or (current_user.id if current_user.is_authenticated else None)
+        except Exception:
+            aid = None
+        entry = cls(
+            actor_user_id=aid,
+            wardrobe_id=wardrobe_id,
+            action=action, target_type=target_type,
+            target_id=target_id, summary=summary,
+            metadata_json=json.dumps(meta, ensure_ascii=False) if meta else None,
+        )
+        db.session.add(entry)
+        return entry
 
 DEFAULT_CATEGORIES = [('\U0001f455','\u4e0a\u8863',1),('\U0001f456','\u88e4\u5b50',2),('\U0001f457','\u88d9\u5b50',3),('\U0001f9e5','\u5916\u5957',4),('\U0001f9e3','\u914d\u9970',5)]
 DEFAULT_BRANDS = [('\u4f18\u8863\u5e93',1),('ZARA',2),('H&M',3),('\u65e0\u54c1\u724c',4)]
@@ -411,6 +451,35 @@ def wq(model):
         return model.query.filter(False)  # 空查询
     return model.query.filter_by(wardrobe_id=w.id)
 
+# v1.3: 统一查询服务
+def active_garments():
+    w = current_wardrobe()
+    if not w: return Garment.query.filter(False)
+    return Garment.query.filter_by(wardrobe_id=w.id, archived=False, deleted_at=None)
+
+def trashed_garments():
+    w = current_wardrobe()
+    if not w: return Garment.query.filter(False)
+    return Garment.query.filter_by(wardrobe_id=w.id, archived=False).filter(Garment.deleted_at.isnot(None))
+
+def get_active_garment_or_404(gid):
+    w = current_wardrobe()
+    if not w: abort(404)
+    return Garment.query.filter_by(id=gid, wardrobe_id=w.id, deleted_at=None).first_or_404()
+
+# v1.3: 维护模式
+_MAINTENANCE_FILE = os.path.join(_data_path, '.maintenance')
+
+def is_maintenance_mode():
+    return os.path.exists(_MAINTENANCE_FILE)
+
+@app.before_request
+def maintenance_guard():
+    if is_maintenance_mode() and request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        pub = ('login', 'logout', 'healthz', 'static', 'uploaded_file',
+               'maintenance_status', 'maintenance_enable', 'maintenance_disable')
+        if request.endpoint not in pub:
+            abort(503)
 @app.before_request
 def check_auth():
     """登录守卫"""
@@ -487,6 +556,7 @@ def login():
             session.pop('current_wardrobe_id', None)
             login_user(u, remember=True)
             u.last_login_at = datetime.utcnow()
+            AuditLog.log('user.login', summary=f'{u.username} 登录成功')
             db.session.commit()
             # 安全 next 参数
             nxt = get_safe_next()
@@ -494,11 +564,15 @@ def login():
                 return redirect(nxt)
             return redirect(url_for('index'))
         error = '用户名或密码错误'
+        AuditLog.log('user.login_failed', summary=f"登录失败: {request.form.get('username','')[:20]}")
+        db.session.commit()
     return render_template('login.html', error=error)
 
 @app.route('/logout', methods=['GET', 'POST'])
 @login_required
 def logout():
+    AuditLog.log('user.logout', summary=f'{current_user.username} 登出')
+    db.session.commit()
     logout_user()
     session.clear()
     response = make_response(redirect(url_for('login')))
@@ -715,7 +789,7 @@ def garment_list():
 
 @app.route('/garments/<int:id>')
 def garment_detail(id):
-    return render_template('detail.html', garment=wq(Garment).get_or_404(id), format_location=format_storage_location)
+    return render_template('detail.html', garment=wq(Garment).filter_by(id=id).first_or_404(), format_location=format_storage_location)
 
 def _save_garment(garment):
     w = current_wardrobe()
@@ -780,7 +854,7 @@ def garment_new():
 
 @app.route('/garments/<int:id>/edit', methods=['GET','POST'])
 def garment_edit(id):
-    g = wq(Garment).get_or_404(id)
+    g = wq(Garment).filter_by(id=id).first_or_404()
     if request.method == 'POST':
         _save_garment(g); g.updated_at = datetime.utcnow(); db.session.commit()
         return redirect(url_for('garment_detail', id=g.id))
@@ -791,12 +865,63 @@ def garment_edit(id):
 
 @app.route('/garments/<int:id>/delete', methods=['POST'])
 def garment_delete(id):
-    db.session.delete(wq(Garment).get_or_404(id)); db.session.commit()
+    g = wq(Garment).filter_by(id=id).first_or_404()
+    g.deleted_at = datetime.utcnow()
+    g.deleted_by_user_id = current_user.id
+    AuditLog.log('garment.trash', wardrobe_id=(current_wardrobe().id if current_wardrobe() else None),
+                 target_type='Garment', target_id=g.id, summary=f'删除衣物: {g.name}')
+    db.session.commit()
     return redirect(url_for('garment_list'))
+
+# ========== v1.3 回收站 ==========
+
+@app.route('/trash')
+def trash_list():
+    garments = trashed_garments().order_by(Garment.deleted_at.desc()).all()
+    return render_template('trash.html', garments=garments)
+
+@app.route('/trash/garments/<int:id>/restore', methods=['POST'])
+def trash_restore(id):
+    g = wq(Garment).filter_by(id=id).first_or_404()
+    if not g.deleted_at: abort(404)
+    g.deleted_at = None; g.deleted_by_user_id = None
+    AuditLog.log('garment.restore', target_type='Garment', target_id=g.id, summary=f'恢复衣物: {g.name}')
+    db.session.commit()
+    return redirect(url_for('trash_list'))
+
+@app.route('/trash/garments/<int:id>/purge', methods=['POST'])
+def trash_purge(id):
+    g = wq(Garment).filter_by(id=id).first_or_404()
+    if not g.deleted_at: abort(404)
+    name = g.name
+    photo = g.photo; thumb = g.thumbnail
+    db.session.delete(g)
+    AuditLog.log('garment.purge', target_type='Garment', target_id=id, summary=f'永久删除衣物: {name}')
+    db.session.commit()
+    # 数据库提交成功后再删文件
+    if photo:
+        fp = os.path.join(app.config['UPLOAD_FOLDER'], photo)
+        if os.path.exists(fp): os.remove(fp)
+    if thumb:
+        fp = os.path.join(app.config['UPLOAD_FOLDER'], thumb)
+        if os.path.exists(fp): os.remove(fp)
+    return redirect(url_for('trash_list'))
+
+@app.route('/trash/empty', methods=['POST'])
+def trash_empty():
+    w = current_wardrobe()
+    if not w: abort(404)
+    garments = trashed_garments().all()
+    count = len(garments)
+    for g in garments:
+        db.session.delete(g)
+    AuditLog.log('trash.empty', target_type='Garment', summary=f'清空回收站: {count}件')
+    db.session.commit()
+    return redirect(url_for('trash_list'))
 
 @app.route('/garments/<int:id>/clone', methods=['POST'])
 def garment_clone(id):
-    o = wq(Garment).get_or_404(id)
+    o = wq(Garment).filter_by(id=id).first_or_404()
     c = Garment(name=f"{o.name} (\u526f\u672c)", category_id=o.category_id, brand_id=o.brand_id,
                 location_preset_id=o.location_preset_id, color=o.color, material=o.material,
                 season_group=o.season_group, price=o.price, size_label=o.size_label, notes=o.notes)
@@ -805,7 +930,7 @@ def garment_clone(id):
 
 @app.route('/garments/<int:id>/status', methods=['POST'])
 def garment_status(id):
-    g = wq(Garment).get_or_404(id)
+    g = wq(Garment).filter_by(id=id).first_or_404()
     g.status = request.form.get('status', '\u5728\u5e93')
     db.session.commit()
     return redirect(url_for('garment_detail', id=id))
@@ -1194,6 +1319,296 @@ def healthz():
     except Exception:
         status["storage"] = "error"
     return status
+
+# ========== v1.3 维护模式 ==========
+
+@app.route('/maintenance/status')
+@login_required
+@admin_required
+def maintenance_status():
+    return {'maintenance': is_maintenance_mode()}
+
+@app.route('/maintenance/enable', methods=['POST'])
+@login_required
+@admin_required
+def maintenance_enable():
+    open(_MAINTENANCE_FILE, 'w').close()
+    return redirect(url_for('manage_system'))
+
+@app.route('/maintenance/disable', methods=['POST'])
+@login_required
+@admin_required
+def maintenance_disable():
+    if os.path.exists(_MAINTENANCE_FILE):
+        os.remove(_MAINTENANCE_FILE)
+    return redirect(url_for('manage_system'))
+
+# ========== v1.3 管理员系统状态页面 ==========
+
+@app.route('/manage/system')
+@login_required
+@admin_required
+def manage_system():
+    db_path = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
+    media_dir = app.config['UPLOAD_FOLDER']
+    
+    # 统计
+    total_garments = Garment.query.count()
+    active_g = active_garments().count()
+    trashed_g = trashed_garments().count()
+    
+    # 媒体文件
+    originals = thumbnails = orphans = missing = 0
+    if os.path.isdir(media_dir):
+        for root, dirs, files in os.walk(media_dir):
+            for fn in files:
+                if fn.startswith('thumb_'): thumbnails += 1
+                elif not fn.startswith('tmp_'): originals += 1
+    
+    # 最近备份
+    bdir = app.config['BACKUP_FOLDER']
+    latest_backup = None
+    if os.path.isdir(bdir):
+        backups = sorted([f for f in os.listdir(bdir) if f.startswith('system_backup_') and f.endswith('.tar.gz')], reverse=True)
+        if backups:
+            latest_backup = {'name': backups[0], 'mtime': datetime.fromtimestamp(os.path.getmtime(os.path.join(bdir, backups[0])))}
+    
+    # 磁盘空间
+    import shutil
+    disk = shutil.disk_usage(_data_path)
+    
+    # maintenance
+    maint = is_maintenance_mode()
+    
+    # schema
+    try:
+        rev = db.session.execute(db.text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:
+        rev = 'unknown'
+    
+    return render_template('manage_system.html',
+        total_garments=total_garments, active_g=active_g, trashed_g=trashed_g,
+        user_count=User.query.count(), wardrobe_count=Wardrobe.query.count(),
+        originals=originals, thumbnails=thumbnails,
+        orphans=orphans, missing=missing,
+        latest_backup=latest_backup, disk=disk,
+        maintenance=maint, schema_rev=rev)
+
+# ========== v1.3 审计日志 ==========
+
+@app.route('/manage/audit')
+@login_required
+@admin_required
+def manage_audit():
+    page = request.args.get('page', 1, type=int)
+    action_filter = request.args.get('action', '')
+    uid_filter = request.args.get('user_id', type=int)
+    
+    query = AuditLog.query
+    if action_filter:
+        query = query.filter_by(action=action_filter)
+    if uid_filter:
+        query = query.filter_by(actor_user_id=uid_filter)
+    
+    logs = query.order_by(AuditLog.created_at.desc()).limit(100).offset((page-1)*100).all()
+    actions = [r[0] for r in db.session.query(AuditLog.action).distinct().all()]
+    return render_template('manage_audit.html', logs=logs, actions=actions,
+                          action_filter=action_filter, uid_filter=uid_filter, page=page)
+
+# ========== v1.3 衣橱选择页 ==========
+
+@app.route('/wardrobes/switch', methods=['GET', 'POST'])
+@login_required
+def wardrobe_switch_page():
+    if request.method == 'POST':
+        return _do_wardrobe_switch()
+    memberships = WardrobeMember.query.filter_by(user_id=current_user.id).all()
+    wardrobes = [m.wardrobe for m in memberships if m.wardrobe and m.wardrobe.is_active]
+    return render_template('switch.html', wardrobes=wardrobes)
+
+@app.route('/wardrobe/switch', methods=['POST'])
+@login_required
+def _do_wardrobe_switch():
+    wid = request.form.get('wardrobe_id', type=int)
+    if wid:
+        w = db.session.get(Wardrobe, wid)
+        if w and w.is_active:
+            m = WardrobeMember.query.filter_by(wardrobe_id=wid, user_id=current_user.id).first()
+            if m:
+                session.pop('current_wardrobe_id', None)
+                # 清除旧筛选
+                for k in list(session.keys()):
+                    if k.startswith('filter_') or k.startswith('page_'):
+                        session.pop(k, None)
+                session['current_wardrobe_id'] = wid
+                AuditLog.log('wardrobe.switch', wardrobe_id=wid, summary=f'切换到: {w.name}')
+                flash(f'已切换到：{w.name}')
+    return redirect(request.referrer or url_for('index'))
+
+# ========== v1.3 账号安全 ==========
+
+@app.route('/account/sessions')
+@login_required
+def account_sessions():
+    return render_template('account_sessions.html')
+
+@app.route('/account/sessions/revoke-others', methods=['POST'])
+@login_required
+def revoke_other_sessions():
+    current_user.session_version = (current_user.session_version or 0) + 1
+    AuditLog.log('user.sessions_revoked', summary=f'{current_user.username} 撤销其他会话')
+    db.session.commit()
+    flash('其他设备会话已失效')
+    return redirect(url_for('account_sessions'))
+
+# ========== v1.3 批量操作 ==========
+
+@app.route('/garments/batch', methods=['POST'])
+@login_required
+def garment_batch():
+    w = current_wardrobe()
+    if not w: abort(404)
+    ids = [int(x) for x in request.form.get('ids', '').split(',') if x.strip().isdigit()]
+    action = request.form.get('batch_action', '')
+    if not ids or not action:
+        flash('请选择衣物和操作')
+        return redirect(url_for('garment_list'))
+    
+    # 全部属于当前衣橱
+    valid = Garment.query.filter(Garment.id.in_(ids), Garment.wardrobe_id == w.id, Garment.deleted_at == None).all()
+    if len(valid) != len(ids):
+        flash('部分衣物不属于当前衣橱，已拒绝')
+        return redirect(url_for('garment_list'))
+    
+    count = 0
+    field_map = {
+        'category': ('category_id', int), 'brand': ('brand_id', int),
+        'season': ('season_group', str), 'status': ('status', str),
+        'location': ('location_preset_id', int),
+    }
+    
+    if action in field_map:
+        field, cast = field_map[action]
+        val = request.form.get(f'batch_{action}')
+        if val is not None and val != '':
+            val = cast(val)
+            for g in valid:
+                setattr(g, field, val)
+                count += 1
+    elif action == 'archive':
+        for g in valid: g.archived = True; count += 1
+    elif action == 'trash':
+        for g in valid: g.deleted_at = datetime.utcnow(); g.deleted_by_user_id = current_user.id; count += 1
+    
+    if count:
+        AuditLog.log('garment.batch', wardrobe_id=w.id, target_type='Garment',
+                     summary=f'批量{action}: {count}件', meta={'ids': ids, 'action': action})
+    db.session.commit()
+    flash(f'成功修改 {count} 件衣物')
+    return redirect(url_for('garment_list'))
+
+# ========== v1.3 purge-trash CLI ==========
+
+@app.cli.command("purge-trash")
+def purge_trash():
+    """清理超过N天的回收站记录"""
+    days = 30
+    import sys as _sys
+    for a in _sys.argv:
+        if a.startswith('--older-than-days='):
+            days = int(a.split('=')[1])
+    cutoff = datetime.utcnow() - __import__('datetime').timedelta(days=days)
+    count = 0
+    for g in Garment.query.filter(Garment.deleted_at.isnot(None), Garment.deleted_at < cutoff).all():
+        db.session.delete(g); count += 1
+    if count:
+        db.session.commit()
+        print(f"已永久删除 {count} 件超过 {days} 天的回收站衣物")
+    else:
+        print(f"没有超过 {days} 天的回收站记录")
+
+@app.cli.command("check-data-integrity")
+def check_data_integrity():
+    """只读检查数据一致性"""
+    import sys as _sys
+    as_json = '--json' in _sys.argv
+    report = {'database': {}, 'media': {}}
+    
+    # DB 检查
+    report['database']['garments'] = Garment.query.count()
+    report['database']['active'] = Garment.query.filter_by(deleted_at=None).count()
+    report['database']['trashed'] = Garment.query.filter(Garment.deleted_at.isnot(None)).count()
+    
+    # 外键检查
+    orphan_cats = Garment.query.filter(Garment.category_id.isnot(None)).filter(~Garment.category_id.in_(db.session.query(Category.id))).count()
+    orphan_brands = Garment.query.filter(Garment.brand_id.isnot(None)).filter(~Garment.brand_id.in_(db.session.query(Brand.id))).count()
+    report['database']['orphan_category_refs'] = orphan_cats
+    report['database']['orphan_brand_refs'] = orphan_brands
+    
+    # 媒体检查
+    media_dir = app.config['UPLOAD_FOLDER']
+    db_photos = set()
+    for g in Garment.query.all():
+        if g.photo: db_photos.add(g.photo)
+        if g.thumbnail: db_photos.add(g.thumbnail)
+    
+    disk_files = set()
+    if os.path.isdir(media_dir):
+        for root, dirs, files in os.walk(media_dir):
+            for fn in files:
+                disk_files.add(os.path.relpath(os.path.join(root, fn), media_dir))
+    
+    missing = db_photos - disk_files
+    orphaned = disk_files - db_photos
+    tmp_files = {f for f in disk_files if f.startswith('tmp_')}
+    
+    report['media']['total_db_refs'] = len(db_photos)
+    report['media']['total_disk_files'] = len(disk_files)
+    report['media']['missing_files'] = len(missing)
+    report['media']['orphan_files'] = len(orphaned)
+    report['media']['tmp_files'] = len(tmp_files)
+    
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print("数据一致性检查报告")
+        print(f"  数据库: {report['database']['garments']} 衣物 ({report['database']['active']}活跃, {report['database']['trashed']}回收站)")
+        print(f"  外键: 孤立分类引用={orphan_cats}, 孤立品牌引用={orphan_brands}")
+        print(f"  媒体: 引用{len(db_photos)}文件, 磁盘{len(disk_files)}文件")
+        print(f"  缺失: {len(missing)} 引用文件不存在")
+        print(f"  孤立: {len(orphaned)} 磁盘文件无引用")
+        print(f"  临时: {len(tmp_files)} tmp文件")
+        if missing:
+            print(f"  ⚠️ 缺失文件: {' '.join(sorted(list(missing))[:10])}")
+        if orphaned:
+            print(f"  ⚠️ 孤立文件: {' '.join(sorted(list(orphaned))[:10])}")
+
+@app.cli.command("repair-thumbnails")
+def repair_thumbnails():
+    """根据原图重新生成缺失的缩略图"""
+    media_dir = app.config['UPLOAD_FOLDER']
+    fixed = 0
+    for g in Garment.query.filter(Garment.photo.isnot(None)).all():
+        if g.photo and (not g.thumbnail or not os.path.exists(os.path.join(media_dir, g.thumbnail))):
+            src = os.path.join(media_dir, g.photo)
+            if os.path.exists(src):
+                try:
+                    img = Image.open(src).convert('RGB')
+                    img.thumbnail((400, 400), Image.LANCZOS)
+                    thumb_fn = f"thumb_{os.path.splitext(g.photo)[0]}.webp"
+                    tmp_path = os.path.join(app.config['TMP_FOLDER'], thumb_fn)
+                    final_path = os.path.join(media_dir, thumb_fn)
+                    img.save(tmp_path, 'WEBP', quality=80)
+                    os.rename(tmp_path, final_path)
+                    g.thumbnail = thumb_fn
+                    fixed += 1
+                except Exception as e:
+                    print(f"  ❌ {g.photo}: {e}")
+    if fixed:
+        db.session.commit()
+        print(f"✅ 已修复 {fixed} 个缩略图")
+    else:
+        print("所有缩略图正常，无需修复")
 
 # ========== CLI 命令 ==========
 

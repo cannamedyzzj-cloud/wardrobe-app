@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}会话管理 - Samantha的衣橱{% endblock %}
+{% block content %}
+<div class="mb-4"><a href="/account" class="text-gray-400 text-sm no-underline">← 返回账号设置</a></div>
+
+<h2 class="text-base font-bold text-gray-600 mb-4">🔐 会话管理</h2>
+
+<div class="bg-white rounded-2xl p-5 shadow-sm mb-4">
+    <h3 class="font-bold text-gray-700 mb-2 text-sm">当前会话</h3>
+    <div class="text-sm text-gray-400">你已在当前设备登录。修改密码或撤销其他登录后，其他设备的会话将失效。</div>
+</div>
+
+<div class="bg-white rounded-2xl p-5 shadow-sm">
+    <h3 class="font-bold text-gray-700 mb-3 text-sm">撤销其他会话</h3>
+    <form method="post" action="/account/sessions/revoke-others" onsubmit="return confirm('确认撤销其他所有设备的登录会话？')">
+        <button type="submit" class="w-full py-3 rounded-xl bg-red-50 text-red-500 font-medium text-sm hover:bg-red-100 transition-colors">
+            撤销其他设备登录
+        </button>
+    </form>
+</div>
+{% endblock %}

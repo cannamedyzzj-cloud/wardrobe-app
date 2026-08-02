@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}选择衣橱 - Samantha的衣橱{% endblock %}
+{% block content %}
+<h2 class="text-base font-bold text-gray-600 mb-4">👗 选择衣橱</h2>
+
+<div class="space-y-3">
+    {% for w in wardrobes %}
+    <form method="post" action="/wardrobe/switch">
+        <input type="hidden" name="wardrobe_id" value="{{ w.id }}">
+        <button type="submit" class="w-full bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow text-left {% if current_w and current_w.id == w.id %}ring-2 ring-primary{% endif %}">
+            <div class="flex items-center gap-4">
+                <span class="text-3xl">👗</span>
+                <div class="flex-1">
+                    <div class="font-bold text-gray-800">{{ w.name }}</div>
+                    <div class="text-sm text-gray-400">拥有者: {{ w.owner.display_name or w.owner.username }}</div>
+                </div>
+                {% if current_w and current_w.id == w.id %}
+                <span class="text-xs bg-primary-light text-primary-dark px-2 py-1 rounded-full">当前</span>
+                {% endif %}
+            </div>
+        </button>
+    </form>
+    {% endfor %}
+</div>
+{% endblock %}
