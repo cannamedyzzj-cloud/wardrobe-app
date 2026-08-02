@@ -3,7 +3,8 @@
 import json, io, zipfile, os, uuid, base64, hashlib
 from datetime import datetime
 from collections import Counter
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, session, abort, flash
+from urllib.parse import urlsplit
+from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, session, abort, flash, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -12,6 +13,13 @@ from PIL import Image
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-me')
+
+# Session Cookie 固定配置（防止 Safari 多 Cookie 冲突）
+app.config['SESSION_COOKIE_NAME'] = 'samantha_session'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_PATH'] = '/'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FORCE_HTTPS', '').lower() == 'true'
 
 _data_path = os.environ.get('DATA_PATH', '/app/data')
 _db_url = os.environ.get('DATABASE_URL')
@@ -362,6 +370,8 @@ def current_wardrobe():
             # 验证用户仍是成员
             if WardrobeMember.query.filter_by(wardrobe_id=wid, user_id=current_user.id).first():
                 return w
+        # 衣橱已失效或用户已不是成员 → 清除
+        session.pop('current_wardrobe_id', None)
     # 自动选择第一个衣橱
     if current_user.is_authenticated:
         m = WardrobeMember.query.filter_by(user_id=current_user.id).order_by(WardrobeMember.id).first()
@@ -369,6 +379,22 @@ def current_wardrobe():
             session['current_wardrobe_id'] = m.wardrobe_id
             return m.wardrobe
     return None
+
+def _select_initial_wardrobe():
+    """登录后选择初始衣橱。返回 Wardrobe / 'choose' / None"""
+    session.pop('current_wardrobe_id', None)
+    if not current_user.is_authenticated:
+        return None
+    memberships = WardrobeMember.query.filter_by(user_id=current_user.id).all()
+    active = [m for m in memberships if m.wardrobe and m.wardrobe.is_active]
+    if len(active) == 0:
+        return None
+    if len(active) == 1:
+        session['current_wardrobe_id'] = active[0].wardrobe_id
+        return active[0].wardrobe
+    # 多个衣橱 → 选第一个（用户后续可切换）
+    session['current_wardrobe_id'] = active[0].wardrobe_id
+    return active[0].wardrobe
 
 def wq(model):
     """衣橱隔离查询"""
@@ -383,7 +409,46 @@ def check_auth():
     public = ['login', 'logout', 'static', 'uploaded_file', 'manifest', 'service_worker', 'healthz']
     if request.endpoint not in public and not request.path.startswith('/uploads/') and not request.path.startswith('/static/'):
         if not current_user.is_authenticated:
-            return redirect(url_for('login', next=request.url))
+            return redirect(url_for('login', next=request.path))
+
+def get_safe_next():
+    """安全校验 next 参数，防止重定向循环"""
+    target = request.args.get('next') or request.form.get('next')
+    if not target:
+        return None
+    parsed = urlsplit(target)
+    # 拒绝外部 URL
+    if parsed.scheme or parsed.netloc:
+        return None
+    if not parsed.path.startswith('/'):
+        return None
+    # 禁止跳转到登录/登出（会形成循环）
+    blocked = {'/login', '/logout', url_for('login'), url_for('logout')}
+    if parsed.path in blocked or parsed.path.rstrip('/') in blocked:
+        return None
+    # 禁止多层嵌套 next
+    if '/login?next=' in target or '/logout?next=' in target:
+        return None
+    return target
+
+@app.after_request
+def add_private_cache_headers(response):
+    """私有页面统一禁止缓存"""
+    private_prefixes = (
+        '/', '/login', '/logout', '/account', '/wardrobes',
+        '/garments', '/manage', '/admin', '/api', '/media',
+        '/uploads', '/export', '/find', '/locations', '/smart',
+    )
+    path = request.path.rstrip('/') or '/'
+    if path == '/' or any(path.startswith(p) for p in private_prefixes):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        # 保留已有的 Vary 头
+        existing_vary = response.headers.get('Vary', '')
+        if 'Cookie' not in existing_vary:
+            response.headers['Vary'] = f"{existing_vary}, Cookie".strip(', ')
+    return response
 
 def admin_required(f):
     """系统管理员权限检查"""
@@ -399,27 +464,42 @@ def admin_required(f):
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
+        # 已登录 → 根据衣橱情况决定去向
+        w = _select_initial_wardrobe()
+        if w is None:
+            return render_template('no_wardrobe.html'), 200
+        if w == 'choose':
+            return redirect(url_for('index'))
         return redirect(url_for('index'))
     error = None
     if request.method == 'POST':
         u = User.query.filter_by(username=request.form.get('username','').strip()).first()
         if u and u.check_password(request.form.get('password','')) and u.is_active:
+            # 登录前清除旧账号上下文
+            session.pop('current_wardrobe_id', None)
             login_user(u, remember=True)
             u.last_login_at = datetime.utcnow()
             db.session.commit()
-            nxt = request.args.get('next')
-            if nxt and nxt.startswith('/'):
+            # 安全 next 参数
+            nxt = get_safe_next()
+            if nxt:
                 return redirect(nxt)
             return redirect(url_for('index'))
         error = '用户名或密码错误'
     return render_template('login.html', error=error)
 
-@app.route('/logout')
+@app.route('/logout', methods=['GET', 'POST'])
 @login_required
 def logout():
-    session.pop('current_wardrobe_id', None)
     logout_user()
-    return redirect(url_for('login'))
+    session.clear()
+    response = make_response(redirect(url_for('login')))
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    response.delete_cookie('session', path='/')
+    response.delete_cookie('remember_token', path='/')
+    return response
 
 @app.route('/account')
 @login_required
@@ -594,7 +674,7 @@ def admin_members(id):
 def index():
     w = current_wardrobe()
     if not w:
-        return redirect(url_for('login'))
+        return render_template('no_wardrobe.html'), 200
     categories = wq(Category).order_by(Category.sort_order).all()
     total = wq(Garment).filter_by(archived=False).count()
     cat_counts = {c.id: wq(Garment).filter_by(category_id=c.id, archived=False).count() for c in categories}
