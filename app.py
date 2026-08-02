@@ -198,6 +198,14 @@ def verify_storage_id():
             f.write(sid)
         return True, sid
 
+def _read_storage_id():
+    """只读获取 storage ID"""
+    sf = os.path.join(_data_path, '.wardrobe-storage-id')
+    if os.path.exists(sf):
+        with open(sf) as f:
+            return f.read().strip()
+    return 'unknown'
+
 def preflight_check():
     """
     启动前检查。返回 (ok, message)。
@@ -1238,70 +1246,342 @@ def install_new_instance():
 
 @app.cli.command("backup-system")
 def backup_system():
-    """系统级备份：数据库 + 所有媒体文件 → tar.gz"""
-    import tarfile
+    """系统级备份：数据库(SQLite Backup API) + 媒体文件 → tar.gz"""
+    import tarfile, shutil
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     backup_name = f"system_backup_{ts}.tar.gz"
-    backup_path = os.path.join(app.config['BACKUP_FOLDER'], backup_name)
+    tmp_path = os.path.join(app.config['BACKUP_FOLDER'], f".tmp_{backup_name}")
+    final_path = os.path.join(app.config['BACKUP_FOLDER'], backup_name)
     os.makedirs(app.config['BACKUP_FOLDER'], exist_ok=True)
 
-    db_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
+    db_path = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
     media_dir = app.config['UPLOAD_FOLDER']
 
-    # Build manifest
+    # 统计
+    with app.app_context():
+        garment_count = Garment.query.count()
+        user_count = User.query.count()
+        wardrobe_count = Wardrobe.query.count()
+        cat_count = Category.query.count()
+        brand_count = Brand.query.count()
+
+    # 媒体文件统计
+    originals = []
+    thumbnails = []
+    if os.path.isdir(media_dir):
+        for root, dirs, files in os.walk(media_dir):
+            for fn in files:
+                fp = os.path.join(root, fn)
+                rel = os.path.relpath(fp, media_dir)
+                if fn.startswith('thumb_'):
+                    thumbnails.append(rel)
+                elif not fn.startswith('tmp_'):
+                    originals.append(rel)
+
     manifest = {
-        "app_version": "1.0.0",
+        "backup_version": 1,
         "backup_type": "system",
         "created_at": datetime.utcnow().isoformat(),
+        "app_version": "1.2.0",
+        "schema_revision": "8a3f1c02d4e5",
+        "installation_id": _read_storage_id(),
+        "database_sha256": "",
+        "user_count": user_count,
+        "wardrobe_count": wardrobe_count,
+        "garment_count": garment_count,
+        "category_count": cat_count,
+        "brand_count": brand_count,
+        "original_count": len(originals),
+        "thumbnail_count": len(thumbnails),
         "files": {},
     }
 
-    with tarfile.open(backup_path, "w:gz") as tar:
-        # Backup database
-        if os.path.exists(db_path):
-            tar.add(db_path, arcname="wardrobe.sqlite3")
-            with open(db_path, "rb") as f:
-                manifest["db_sha256"] = hashlib.sha256(f.read()).hexdigest()
+    try:
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            # 1. SQLite 一致性备份（使用 Backup API）
+            tmp_db = os.path.join(app.config['TMP_FOLDER'], f"backup_db_{ts}.sqlite3")
+            os.makedirs(app.config['TMP_FOLDER'], exist_ok=True)
+            if os.path.exists(db_path):
+                import sqlite3
+                src = sqlite3.connect(db_path)
+                dst = sqlite3.connect(tmp_db)
+                src.backup(dst)
+                src.close(); dst.close()
+                # 校验备份数据库
+                vconn = sqlite3.connect(tmp_db)
+                integrity = vconn.execute("PRAGMA integrity_check").fetchone()[0]
+                vconn.close()
+                if integrity != 'ok':
+                    raise RuntimeError(f"数据库完整性检查失败: {integrity}")
+                # 加入 tar
+                tar.add(tmp_db, arcname="database/wardrobe.sqlite3")
+                with open(tmp_db, "rb") as f:
+                    manifest["database_sha256"] = hashlib.sha256(f.read()).hexdigest()
+                os.remove(tmp_db)
 
-        # Backup media
-        manifest["media_count"] = 0
-        if os.path.isdir(media_dir):
-            for root, dirs, files in os.walk(media_dir):
-                for fn in files:
-                    fp = os.path.join(root, fn)
-                    arc = os.path.join("media", os.path.relpath(fp, media_dir))
-                    tar.add(fp, arcname=arc)
-                    with open(fp, "rb") as f:
-                        manifest["files"][arc] = hashlib.sha256(f.read()).hexdigest()
-                    manifest["media_count"] += 1
+            # 2. 媒体文件
+            if os.path.isdir(media_dir):
+                for root, dirs, files in os.walk(media_dir):
+                    for fn in files:
+                        fp = os.path.join(root, fn)
+                        rel = os.path.relpath(fp, media_dir)
+                        if rel.startswith('tmp_'):
+                            continue  # 跳过临时文件
+                        arc = os.path.join("media", rel)
+                        tar.add(fp, arcname=arc)
+                        with open(fp, "rb") as f:
+                            manifest["files"][arc] = {
+                                "sha256": hashlib.sha256(f.read()).hexdigest(),
+                                "size": os.path.getsize(fp),
+                            }
 
-        # Add manifest
-        manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
-        info = tarfile.TarInfo(name="manifest.json")
-        info.size = len(manifest_json.encode("utf-8"))
-        tar.addfile(info, io.BytesIO(manifest_json.encode("utf-8")))
+            # 3. Manifest
+            manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
+            info = tarfile.TarInfo(name="manifest.json")
+            info.size = len(manifest_json.encode("utf-8"))
+            tar.addfile(info, io.BytesIO(manifest_json.encode("utf-8")))
 
-    size_mb = os.path.getsize(backup_path) / (1024 * 1024)
-    print(f"✅ 系统备份完成: {backup_name}")
-    print(f"   大小: {size_mb:.1f} MB")
-    print(f"   文件: {manifest['media_count']} 个媒体文件 + 数据库")
+        # 原子重命名
+        if os.path.exists(final_path):
+            os.remove(final_path)
+        os.rename(tmp_path, final_path)
+
+        size_mb = os.path.getsize(final_path) / (1024 * 1024)
+        print(f"✅ 系统备份完成: {backup_name}")
+        print(f"   大小: {size_mb:.1f} MB")
+        print(f"   数据库: {garment_count} 衣物, {user_count} 用户, {wardrobe_count} 衣橱")
+        print(f"   媒体: {len(originals) + len(thumbnails)} 文件")
+        print(f"   ⚠️  提醒: 同盘备份无法抵御磁盘损坏，请定期复制到其他设备。")
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        print(f"❌ 备份失败: {e}")
+        raise SystemExit(1)
+
+@app.cli.command("list-backups")
+def list_backups():
+    """列出所有系统备份"""
+    bdir = app.config['BACKUP_FOLDER']
+    if not os.path.isdir(bdir):
+        print("暂无备份")
+        return
+    files = sorted([f for f in os.listdir(bdir) if f.startswith('system_backup_') and f.endswith('.tar.gz')], reverse=True)
+    if not files:
+        print("暂无备份")
+        return
+    print(f"{'备份文件':<45} {'大小':>8} {'创建时间':<22}")
+    print("-" * 80)
+    for f in files:
+        fp = os.path.join(bdir, f)
+        size = os.path.getsize(fp)
+        mtime = datetime.fromtimestamp(os.path.getmtime(fp)).strftime("%Y-%m-%d %H:%M:%S")
+        unit = "KB"
+        sz = size / 1024
+        if sz > 1024:
+            sz /= 1024; unit = "MB"
+        print(f"{f:<45} {sz:>7.1f}{unit} {mtime:<22}")
+    print(f"\n共 {len(files)} 个备份，位于 {bdir}")
 
 @app.cli.command("verify-backup")
 def verify_backup():
-    """验证备份文件完整性"""
-    import tarfile as tf
-    backups = sorted([f for f in os.listdir(app.config['BACKUP_FOLDER']) if f.endswith('.tar.gz')], reverse=True)
-    if not backups:
-        print("❌ 没有找到备份文件")
-        return
-    latest = backups[0]
-    bp = os.path.join(app.config['BACKUP_FOLDER'], latest)
-    print(f"验证: {latest}")
-    with tf.open(bp, "r:gz") as tar:
-        members = tar.getmembers()
-        print(f"包含 {len(members)} 个条目")
-        for m in members:
-            print(f"  {m.name} ({m.size} bytes)")
+    """验证备份文件完整性（默认最新，可指定文件名）"""
+    import tarfile as tf, sys as _sys
+    bdir = app.config['BACKUP_FOLDER']
+    target = _sys.argv[-1] if len(_sys.argv) > 2 and _sys.argv[-2] == 'verify-backup' else None
+    if target and not target.endswith('.tar.gz'):
+        target = None
+    if target:
+        bp = os.path.join(bdir, target) if not os.path.isabs(target) else target
+    else:
+        files = sorted([f for f in os.listdir(bdir) if f.startswith('system_backup_') and f.endswith('.tar.gz')])
+        if not files:
+            print("❌ 没有找到备份文件"); return
+        bp = os.path.join(bdir, files[-1])
+    if not os.path.exists(bp):
+        print(f"❌ 备份文件不存在: {bp}"); return
+
+    print(f"验证: {os.path.basename(bp)}")
+    ok = 0; fail = 0
+    try:
+        with tf.open(bp, "r:gz") as tar:
+            # 读取 manifest
+            try:
+                mf = tar.extractfile("manifest.json")
+                manifest = json.loads(mf.read().decode('utf-8'))
+            except Exception:
+                print("❌ 无法读取 manifest.json"); return
+
+            print(f"   版本: {manifest.get('app_version','?')}  衣橱: {manifest.get('wardrobe_count','?')}")
+            print(f"   衣物: {manifest.get('garment_count','?')}  用户: {manifest.get('user_count','?')}")
+
+            files_entry = manifest.get('files', {})
+            names = tar.getnames()
+
+            # 校验 manifest 中的 SHA256
+            for arc, info in files_entry.items():
+                expected = info.get('sha256', '') if isinstance(info, dict) else info
+                if arc not in names:
+                    print(f"   ❌ 缺失: {arc}"); fail += 1; continue
+                fobj = tar.extractfile(arc)
+                if fobj:
+                    actual = hashlib.sha256(fobj.read()).hexdigest()
+                    fobj.close()
+                    if actual != expected:
+                        print(f"   ❌ 校验失败: {arc}")
+                        fail += 1
+                    else:
+                        ok += 1
+
+            # 校验数据库文件
+            if 'database/wardrobe.sqlite3' in names:
+                expected_db = manifest.get('database_sha256', '')
+                if expected_db:
+                    fobj = tar.extractfile('database/wardrobe.sqlite3')
+                    actual = hashlib.sha256(fobj.read()).hexdigest()
+                    fobj.close()
+                    if actual == expected_db:
+                        print(f"   ✅ 数据库 SHA256 通过")
+                        ok += 1
+                    else:
+                        print(f"   ❌ 数据库 SHA256 不匹配"); fail += 1
+
+        if fail > 0:
+            print(f"\n❌ 验证失败: {ok} 通过, {fail} 失败")
+        else:
+            print(f"\n✅ 验证通过: {ok} 文件校验一致")
+    except Exception as e:
+        print(f"❌ 验证异常: {e}")
+
+@app.cli.command("restore-system")
+def restore_system():
+    """从备份恢复系统（破坏性操作，需确认）"""
+    import tarfile as tf, sys as _sys, shutil
+    bdir = app.config['BACKUP_FOLDER']
+    target = _sys.argv[-1] if len(_sys.argv) > 2 and _sys.argv[-2] == 'restore-system' else None
+    if target and not target.endswith('.tar.gz'):
+        target = None
+    if target:
+        bp = os.path.join(bdir, target) if not os.path.isabs(target) else target
+    else:
+        files = sorted([f for f in os.listdir(bdir) if f.startswith('system_backup_') and f.endswith('.tar.gz')])
+        if not files:
+            print("❌ 没有找到备份文件"); return
+        bp = os.path.join(bdir, files[-1])
+    if not os.path.exists(bp):
+        print(f"❌ 备份文件不存在: {bp}"); return
+
+    print(f"⚠️  即将从备份恢复: {os.path.basename(bp)}")
+    print(f"   这将覆盖当前数据库和所有媒体文件！")
+
+    # 1. 校验备份
+    print("\n--- 校验备份 ---")
+    try:
+        with tf.open(bp, "r:gz") as tar:
+            names = tar.getnames()
+            if 'manifest.json' not in names:
+                print("❌ 备份中无 manifest.json，拒绝恢复"); return
+            mf = tar.extractfile("manifest.json")
+            manifest = json.loads(mf.read().decode('utf-8'))
+            mf.close()
+
+            # 校验所有文件
+            files_entry = manifest.get('files', {})
+            all_ok = True
+            for arc, info in files_entry.items():
+                expected = info.get('sha256', '') if isinstance(info, dict) else info
+                fobj = tar.extractfile(arc)
+                if fobj:
+                    actual = hashlib.sha256(fobj.read()).hexdigest()
+                    fobj.close()
+                    if actual != expected:
+                        print(f"   ❌ {arc}"); all_ok = False
+            if not all_ok:
+                print("❌ 备份校验失败，拒绝恢复"); return
+            print("   ✅ 全部文件校验通过")
+    except Exception as e:
+        print(f"❌ 校验异常: {e}"); return
+
+    # 2. 先备份当前状态
+    print("\n--- 备份当前状态 ---")
+    rescue_name = f"pre_restore_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.tar.gz"
+    rescue_path = os.path.join(bdir, rescue_name)
+    try:
+        import tarfile as _tar
+        with _tar.open(rescue_path, "w:gz") as rt:
+            db_path = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
+            if os.path.exists(db_path):
+                rt.add(db_path, arcname="database/wardrobe.sqlite3")
+            media_dir = app.config['UPLOAD_FOLDER']
+            if os.path.isdir(media_dir):
+                for root, dirs, files in os.walk(media_dir):
+                    for fn in files:
+                        fp = os.path.join(root, fn)
+                        rt.add(fp, arcname=os.path.join("media", os.path.relpath(fp, media_dir)))
+        print(f"   ✅ 当前状态已保存到: {rescue_name}")
+    except Exception as e:
+        print(f"   ⚠️  备份当前状态失败: {e}")
+        if input("继续恢复? (yes/no): ").strip().lower() != 'yes':
+            return
+
+    # 3. 确认
+    print(f"\n恢复后数据库将有:")
+    print(f"   衣物: {manifest.get('garment_count','?')}")
+    print(f"   用户: {manifest.get('user_count','?')}")
+    confirm = input("\n确认恢复？输入 yes 继续: ").strip().lower()
+    if confirm != 'yes':
+        print("已取消"); return
+
+    # 4. 恢复到临时目录
+    print("\n--- 恢复中 ---")
+    tmp_restore = os.path.join(app.config['TMP_FOLDER'], f"restore_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
+    os.makedirs(tmp_restore, exist_ok=True)
+    try:
+        with tf.open(bp, "r:gz") as tar:
+            tar.extractall(tmp_restore)
+
+        # 校验恢复后的数据库
+        tmp_db = os.path.join(tmp_restore, "database", "wardrobe.sqlite3")
+        if os.path.exists(tmp_db):
+            import sqlite3
+            vconn = sqlite3.connect(tmp_db)
+            integrity = vconn.execute("PRAGMA integrity_check").fetchone()[0]
+            vconn.close()
+            if integrity != 'ok':
+                raise RuntimeError(f"恢复后数据库校验失败: {integrity}")
+            print(f"   ✅ 数据库 integrity_check: ok")
+
+        # 5. 原子替换
+        db_dest = os.path.join(_data_path, 'db', 'wardrobe.sqlite3')
+        reserved_db = os.path.join(_data_path, 'db', f".replaced_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.sqlite3")
+        if os.path.exists(db_dest):
+            os.rename(db_dest, reserved_db)
+            print(f"   📦 旧数据库保留为: {os.path.basename(reserved_db)}")
+
+        # 复制数据库
+        if os.path.exists(tmp_db):
+            shutil.copy2(tmp_db, db_dest)
+
+        # 复制媒体文件
+        tmp_media = os.path.join(tmp_restore, "media")
+        if os.path.isdir(tmp_media):
+            for root, dirs, files in os.walk(tmp_media):
+                for fn in files:
+                    src = os.path.join(root, fn)
+                    rel = os.path.relpath(src, tmp_media)
+                    dst = os.path.join(app.config['UPLOAD_FOLDER'], rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+
+    except Exception as e:
+        print(f"❌ 恢复失败: {e}")
+        raise SystemExit(1)
+    finally:
+        if os.path.isdir(tmp_restore):
+            shutil.rmtree(tmp_restore, ignore_errors=True)
+
+    print(f"\n✅ 恢复完成！")
+    print(f"   请重启应用以加载恢复的数据。")
+    print(f"   如需回滚，旧数据库位于: {os.path.basename(reserved_db) if os.path.exists(reserved_db) else 'N/A'}")
 
 @app.cli.command("bootstrap-multiuser")
 def bootstrap_multiuser():
